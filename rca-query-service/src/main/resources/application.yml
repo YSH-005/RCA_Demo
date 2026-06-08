@@ -1,0 +1,16 @@
+spring:
+  config:
+    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+  application:
+    name: rca-query-service
+  data:
+    mongodb:
+      uri: ${MONGODB_URI}
+      database: ${MONGODB_DATABASE}
+
+server:
+  port: 8083
+
+logging:
+  level:
+    com.rca: DEBUG

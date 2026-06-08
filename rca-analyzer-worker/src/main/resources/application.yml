@@ -1,0 +1,41 @@
+spring:
+  config:
+    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+  application:
+    name: rca-analyzer-worker
+  data:
+    mongodb:
+      uri: ${MONGODB_URI}
+      database: ${MONGODB_DATABASE}
+  kafka:
+    bootstrap-servers: ${REDPANDA_BROKERS}
+    consumer:
+      group-id: rca-analyzer-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.rca.common.dto"
+        spring.json.value.default.type: com.rca.common.dto.KafkaHarMessage
+        security.protocol: SASL_SSL
+        sasl.mechanism: SCRAM-SHA-256
+        sasl.jaas.config: >
+          org.apache.kafka.common.security.scram.ScramLoginModule required
+          username="${REDPANDA_USERNAME}"
+          password="${REDPANDA_PASSWORD}";
+
+server:
+  port: 8082
+
+loki:
+  url: ${LOKI_URL}
+  user: ${LOKI_USER}
+  password: ${LOKI_PASSWORD}
+
+gemini:
+  api-key: ${GEMINI_API_KEY}
+  endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+
+logging:
+  level:
+    com.rca: DEBUG

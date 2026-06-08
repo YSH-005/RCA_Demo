@@ -1,0 +1,17 @@
+spring:
+  config:
+    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+  application:
+    name: rca-simulator
+
+server:
+  port: 8084
+
+simulator:
+  ingestion-url: http://localhost:8081/api/v1/rca/ingest
+  interval-ms: 30000    # fires every 30 seconds
+  enabled: true
+
+logging:
+  level:
+    com.rca: DEBUG

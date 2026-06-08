@@ -1,0 +1,28 @@
+spring:
+  config:
+    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+  application:
+    name: rca-ingestion-service
+  data:
+    mongodb:
+      uri: ${MONGODB_URI}
+      database: ${MONGODB_DATABASE}
+  kafka:
+    bootstrap-servers: ${REDPANDA_BROKERS}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    properties:
+      security.protocol: SASL_SSL
+      sasl.mechanism: SCRAM-SHA-256
+      sasl.jaas.config: >
+        org.apache.kafka.common.security.scram.ScramLoginModule required
+        username="${REDPANDA_USERNAME}"
+        password="${REDPANDA_PASSWORD}";
+
+server:
+  port: 8081
+
+logging:
+  level:
+    com.rca: DEBUG
