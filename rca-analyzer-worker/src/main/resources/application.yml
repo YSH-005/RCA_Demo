@@ -34,7 +34,7 @@ loki:
 
 gemini:
   api-key: ${GEMINI_API_KEY}
-  endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+  endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
 
 logging:
   level:
