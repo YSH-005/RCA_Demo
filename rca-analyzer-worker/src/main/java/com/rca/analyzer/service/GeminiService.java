@@ -41,6 +41,10 @@ public class GeminiService {
             Map<String, Object> requestBody = Map.of(
                     "contents", List.of(
                             Map.of("parts", List.of(Map.of("text", prompt)))
+                    ),
+                    "generationConfig", Map.of(
+                            "temperature", 0.1,
+                            "maxOutputTokens", 4000
                     )
             );
 
@@ -67,27 +71,31 @@ public class GeminiService {
                 ? "No logs available."
                 : String.join("\n", lokiLogs.subList(0, Math.min(lokiLogs.size(), 50)));
 
+
         return """
-                You are an expert site reliability engineer performing root cause analysis.
-                
-                INCIDENT SUMMARY:
-                - Correlation ID: %s
-                - Slowest Request: [%s] %s
-                - Duration: %d ms
-                
-                APPLICATION LOGS:
-                %s
-                
-                TASK:
-                Analyze the above and respond ONLY with a JSON object in this exact format:
-                {
-                  "faultClassification": "<one of: DATABASE_BOTTLENECK, CPU_SATURATION, MEMORY_PRESSURE, NETWORK_TIMEOUT, UNKNOWN>",
-                  "confidenceScore": <0.0 to 1.0>,
-                  "summary": "<2-3 sentence explanation of root cause>",
-                  "evidence": ["<evidence point 1>", "<evidence point 2>"],
-                  "recommendedActions": ["<action 1>", "<action 2>"]
-                }
-                """.formatted(correlationId, slowestMethod, slowestUrl, durationMs, logsText);
+        You are an expert site reliability engineer performing root cause analysis.
+        
+        INCIDENT SUMMARY:
+        - Correlation ID: %s
+        - Slowest Request: [%s] %s
+        - Duration: %d ms
+        
+        APPLICATION LOGS:
+        %s
+        
+        TASK:
+        Analyze the above and respond ONLY with a valid JSON object.
+        No markdown, no backticks, no explanation outside the JSON.
+        Use plain text only in all string values — no special characters.
+        Exact format required:
+        {
+          "faultClassification": "<DATABASE_BOTTLENECK|CPU_SATURATION|MEMORY_PRESSURE|NETWORK_TIMEOUT|UNKNOWN>",
+          "confidenceScore": <0.0 to 1.0>,
+          "summary": "<plain text summary, no backticks or special chars>",
+          "evidence": ["<point 1>", "<point 2>"],
+          "recommendedActions": ["<action 1>", "<action 2>"]
+        }
+        """.formatted(correlationId, slowestMethod, slowestUrl, durationMs, logsText);
     }
 
     private RcaReport parseGeminiResponse(String rawResponse) {

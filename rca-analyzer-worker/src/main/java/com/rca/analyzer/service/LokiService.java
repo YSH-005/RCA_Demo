@@ -40,11 +40,11 @@ public class LokiService {
             Map<?, ?> response = webClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/loki/api/v1/query_range")
-                            .queryParam("query", "{correlation_id=\"" + correlationId + "\"}")
+                            .queryParam("query", String.format("{correlation_id=\"%s\"}", correlationId))
                             .queryParam("start", startTime)
                             .queryParam("end", endTime)
                             .queryParam("limit", "100")
-                            .build())
+                            .build(true))
                     .retrieve()
                     .bodyToMono(Map.class)
                     .block();
