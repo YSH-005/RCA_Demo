@@ -43,7 +43,6 @@ public class RcaCommands implements CommandLineRunner {
         }
     }
 
-    // ── submit <url> <method> <durationMs> <statusCode> ──────────────────
     private void handleSubmit(String[] args) throws Exception {
         if (args.length < 5) {
             System.out.println("Usage: submit <url> <method> <durationMs> <statusCode>");
@@ -84,21 +83,18 @@ public class RcaCommands implements CommandLineRunner {
         System.out.println("Run: poll   <jobId>   to wait for completion");
     }
 
-    // ── status <jobId> ────────────────────────────────────────────────────
     private void handleStatus(String[] args) throws Exception {
         if (args.length < 2) { System.out.println("Usage: status <jobId>"); return; }
         JsonNode job = fetchJob(args[1]);
         printJobSummary(job);
     }
 
-    // ── report <jobId> ────────────────────────────────────────────────────
     private void handleReport(String[] args) throws Exception {
         if (args.length < 2) { System.out.println("Usage: report <jobId>"); return; }
         JsonNode job = fetchJob(args[1]);
         printFullReport(job);
     }
 
-    // ── poll <jobId> [timeoutSeconds] ─────────────────────────────────────
     private void handlePoll(String[] args) throws Exception {
         if (args.length < 2) { System.out.println("Usage: poll <jobId> [timeoutSecs]"); return; }
         String jobId   = args[1];
@@ -126,7 +122,6 @@ public class RcaCommands implements CommandLineRunner {
         System.out.println("Timeout reached — job still processing.");
     }
 
-    // ── helpers ───────────────────────────────────────────────────────────
     private JsonNode fetchJob(String jobId) throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(queryUrl + "/" + jobId))

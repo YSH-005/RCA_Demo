@@ -101,14 +101,12 @@ public class GeminiService {
     private RcaReport parseGeminiResponse(String rawResponse) {
         try {
             JsonNode root = objectMapper.readTree(rawResponse);
-            // Gemini wraps response in candidates[0].content.parts[0].text
             String text = root
                     .path("candidates").get(0)
                     .path("content")
                     .path("parts").get(0)
                     .path("text").asText();
 
-            // Strip markdown fences if Gemini wraps in ```json
             text = text.replaceAll("```json", "").replaceAll("```", "").trim();
 
             JsonNode json = objectMapper.readTree(text);

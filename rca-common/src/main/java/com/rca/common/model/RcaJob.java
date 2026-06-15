@@ -14,7 +14,6 @@ public class RcaJob {
     private String createdAt;
     private String completedAt;
     private Long processingMs;
-    private HarMetadata harMetadata;
     private Telemetry telemetry;
     private RcaReport rcaReport;
     private String errorMessage;

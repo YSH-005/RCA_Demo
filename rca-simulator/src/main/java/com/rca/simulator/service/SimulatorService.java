@@ -1,6 +1,5 @@
 package com.rca.simulator.service;
 
-import com.rca.simulator.model.SimulatedHarRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -9,6 +8,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 
@@ -25,7 +25,6 @@ public class SimulatorService {
     @Value("${simulator.enabled}")
     private boolean enabled;
 
-    // Simulated endpoints that can be "slow"
     private static final List<String[]> ENDPOINTS = List.of(
             new String[]{"GET",    "https://api.example.com/users"},
             new String[]{"POST",   "https://api.example.com/orders"},
@@ -36,7 +35,6 @@ public class SimulatorService {
             new String[]{"POST",   "https://api.example.com/payments/process"}
     );
 
-    // Fault scenarios: [minMs, maxMs, httpStatus, description]
     private static final List<Object[]> FAULT_SCENARIOS = List.of(
             new Object[]{3000,  6000,  500, "DATABASE_BOTTLENECK"},
             new Object[]{5000,  9000,  503, "CPU_SATURATION"},
@@ -52,7 +50,6 @@ public class SimulatorService {
             return;
         }
 
-        // Pick random endpoint and fault
         String[] endpoint = ENDPOINTS.get(random.nextInt(ENDPOINTS.size()));
         Object[] fault = FAULT_SCENARIOS.get(random.nextInt(FAULT_SCENARIOS.size()));
 
@@ -60,14 +57,14 @@ public class SimulatorService {
         int status = (int) fault[2];
         String scenario = (String) fault[3];
 
-        SimulatedHarRequest request = SimulatedHarRequest.builder()
-                .correlationId(UUID.randomUUID().toString())
-                .slowestMethod(endpoint[0])
-                .slowestUrl(endpoint[1])
-                .durationMs(durationMs)
-                .responseStatus(status)
-                .timestamp(Instant.now().toString())
-                .build();
+        Map<String, Object> request = Map.of(
+                "correlationId", UUID.randomUUID().toString(),
+                "slowestMethod", endpoint[0],
+                "slowestUrl", endpoint[1],
+                "durationMs", durationMs,
+                "responseStatus", status,
+                "timestamp", Instant.now().toString()
+        );
 
         log.info("Simulating fault [{}] → {} {} {}ms status={}",
                 scenario, endpoint[0], endpoint[1], durationMs, status);
