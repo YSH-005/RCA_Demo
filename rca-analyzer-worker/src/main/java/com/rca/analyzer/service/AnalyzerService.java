@@ -27,7 +27,6 @@ public class AnalyzerService {
 
         log.info("Starting analysis for jobId={} correlationId={}", jobId, message.getCorrelationId());
 
-        // 1. Mark job as ANALYZING
         RcaJob job = jobRepository.findById(jobId).orElse(null);
         if (job == null) {
             log.error("Job not found in MongoDB: {}", jobId);
@@ -38,26 +37,22 @@ public class AnalyzerService {
         jobRepository.save(job);
 
         try {
-            // 2. Build time window (event time ± 5 minutes in nanoseconds for Loki)
             Instant eventTime = Instant.parse(message.getEventTimestamp());
             String windowStart = String.valueOf(eventTime.minusSeconds(300).toEpochMilli() * 1_000_000L);
             String windowEnd   = String.valueOf(eventTime.plusSeconds(300).toEpochMilli() * 1_000_000L);
 
-            // 3. Fetch Loki logs
             List<String> lokiLogs = lokiService.fetchLogs(
                     message.getCorrelationId(), windowStart, windowEnd);
             log.info("Fetched {} log lines from Loki for jobId={}", lokiLogs.size(), jobId);
 
-            // 4. Populate Telemetry
             Telemetry telemetry = new Telemetry();
             telemetry.setQueryWindowStart(windowStart);
             telemetry.setQueryWindowEnd(windowEnd);
             telemetry.setLokiLogs(lokiLogs);
-            telemetry.setCpuMetrics(List.of());      // Phase 5+ can populate
+            telemetry.setCpuMetrics(List.of());
             telemetry.setMemoryMetrics(List.of());
             job.setTelemetry(telemetry);
 
-            // 5. Call Gemini
             var report = geminiService.analyze(
                     message.getCorrelationId(),
                     message.getSlowestUrl(),
@@ -66,7 +61,6 @@ public class AnalyzerService {
                     lokiLogs
             );
 
-            // 6. Save completed job
             job.setRcaReport(report);
             job.setStatus(JobStatus.COMPLETED);
             job.setCompletedAt(Instant.now().toString());

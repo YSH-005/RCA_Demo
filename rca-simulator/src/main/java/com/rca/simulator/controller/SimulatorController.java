@@ -12,7 +12,6 @@ public class SimulatorController {
 
     private final SimulatorService simulatorService;
 
-    // Manually trigger one simulation without waiting for the schedule
     @PostMapping("/trigger")
     public ResponseEntity<String> trigger() {
         simulatorService.simulateTraffic();
