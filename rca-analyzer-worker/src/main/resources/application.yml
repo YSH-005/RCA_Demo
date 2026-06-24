@@ -1,6 +1,6 @@
 spring:
   config:
-    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+    import: optional:file:${RCA_ENV_FILE:${user.dir}/.env}[.properties],optional:file:${user.dir}/../.env[.properties],optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
   application:
     name: rca-analyzer-worker
   data:
@@ -15,7 +15,7 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
-        spring.json.trusted.packages: "com.rca.common.dto"
+        spring.json.trusted.packages: "com.rca.common.dto,com.rca.common.model"
         spring.json.value.default.type: com.rca.common.dto.KafkaHarMessage
         security.protocol: SASL_SSL
         sasl.mechanism: SCRAM-SHA-256
@@ -27,14 +27,64 @@ spring:
 server:
   port: 8082
 
-loki:
-  url: ${LOKI_URL}
-  user: ${LOKI_USER}
-  password: ${LOKI_PASSWORD}
+observability:
+  graylog:
+    url: ${GRAYLOG_URL:}
+    token: ${GRAYLOG_TOKEN:}
+    stub: ${GRAYLOG_STUB:true}
+    max-results: 50
+    stream-filter: "streams:calltrackingbydb OR streams:perfstats"
+  kibana:
+    url: ${KIBANA_URL:}
+    api-key: ${KIBANA_API_KEY:}
+    index-pattern: ${KIBANA_INDEX_PATTERN:monitoring*}
+    error-index-pattern: ${KIBANA_ERROR_INDEX:}
+    max-results: ${KIBANA_MAX_RESULTS:50}
+  grafana:
+    url: ${GRAFANA_URL:}
+    api-key: ${GRAFANA_API_KEY:}
+    stub: ${GRAFANA_STUB:true}
+    datasource-type: influxdb
+    datasource-uid: ${GRAFANA_DATASOURCE_UID:}
+    flux-query-template: |
+      from(bucket: "metrics")
+        |> range(start: {from}, stop: {to})
+        |> filter(fn: (r) => r["pod"] == "{podName}")
 
 gemini:
   api-key: ${GEMINI_API_KEY}
   endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+
+rca:
+  heuristics:
+    min-confidence-score: 0.25
+    thresholds:
+      har-network-share: 0.35
+      har-wait-share: 0.50
+      har-wait-ms: 2000
+      har-blocked-share: 0.15
+      har-receive-share: 0.30
+      har-send-ms: 500
+      har-backend-gap-ms: 1000
+      kibana-network-time-ms: 500
+      db-share-of-api: 0.70
+      kibana-es-time-ms: 1000
+      kibana-wait-time-ms: 2000
+      log-timing-deviation: 0.50
+    grafana:
+      baseline-hours: 24
+      baseline-gap-minutes: 15
+    baselines:
+      container-cpu-usage-rate: 0.55
+      container-memory-usage-rate: 0.60
+      thread-queue: 5
+      gc-old-gen-ms: 200
+      gc-young-gen-ms: 100
+    multipliers:
+      cpu-rate: 1.25
+      memory-rate: 1.20
+      thread-queue: 2.0
+      gc-old-gen: 2.0
 
 logging:
   level:

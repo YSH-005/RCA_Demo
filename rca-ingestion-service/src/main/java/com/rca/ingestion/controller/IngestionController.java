@@ -6,8 +6,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.util.Map;
+import java.time.Instant;
 
 @Slf4j
 @RestController
@@ -17,10 +18,16 @@ public class IngestionController {
 
     private final IngestionService ingestionService;
 
-    @PostMapping("/ingest")
-    public ResponseEntity<JobCreatedResponse> ingest(@RequestBody Map<String, Object> harPayload) {
-        log.info("Received HAR ingestion request");
-        JobCreatedResponse response = ingestionService.ingestHar(harPayload);
+    @PostMapping(value = "/analyze", consumes = "multipart/form-data")
+    public ResponseEntity<JobCreatedResponse> analyze(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(defaultValue = "0") long slowThresholdMs
+    ) {
+        Instant fromInstant = from != null && !from.isBlank() ? Instant.parse(from) : null;
+        Instant toInstant = to != null && !to.isBlank() ? Instant.parse(to) : null;
+        JobCreatedResponse response = ingestionService.analyzeHar(file, fromInstant, toInstant, slowThresholdMs);
         return ResponseEntity.accepted().body(response);
     }
 

@@ -2,8 +2,11 @@ package com.rca.analyzer.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rca.common.enums.FaultType;
-import com.rca.common.model.RcaReport;
+import com.rca.analyzer.heuristics.FindingsBuilder;
+import com.rca.analyzer.heuristics.RcaContextBuilder;
+import com.rca.common.dto.KafkaHarMessage;
+import com.rca.common.model.RcaHeuristicsResult;
+import com.rca.common.model.StructuredFindings;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
@@ -17,25 +20,34 @@ import java.util.Map;
 @Service
 public class GeminiService {
 
+    public record GeminiSummary(String summary, List<String> recommendedActions) {
+    }
+
     private final WebClient webClient;
     private final String apiKey;
+    private final FindingsBuilder findingsBuilder;
+    private final RcaContextBuilder contextBuilder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public GeminiService(
             @Value("${gemini.endpoint}") String endpoint,
-            @Value("${gemini.api-key}") String apiKey
+            @Value("${gemini.api-key}") String apiKey,
+            FindingsBuilder findingsBuilder,
+            RcaContextBuilder contextBuilder
     ) {
         this.apiKey = apiKey;
+        this.findingsBuilder = findingsBuilder;
+        this.contextBuilder = contextBuilder;
         this.webClient = WebClient.builder()
                 .baseUrl(endpoint)
                 .build();
     }
 
-    public RcaReport analyze(String correlationId, String slowestUrl,
-                             String slowestMethod, long durationMs,
-                             List<String> lokiLogs) {
-        String prompt = buildPrompt(correlationId, slowestUrl, slowestMethod, durationMs, lokiLogs);
-        log.info("Calling Gemini for correlationId={}", correlationId);
+    public GeminiSummary summarize(KafkaHarMessage message, StructuredFindings findings,
+                                   RcaHeuristicsResult heuristics, List<String> logLines) {
+        String prompt = buildPrompt(message, findings, heuristics, logLines);
+        log.info("Calling Gemini for correlationId={} bottleneck={}",
+                message.getCorrelationId(), heuristics.getPrimaryCategory());
 
         try {
             Map<String, Object> requestBody = Map.of(
@@ -59,46 +71,48 @@ public class GeminiService {
             return parseGeminiResponse(rawResponse);
 
         } catch (Exception e) {
-            log.error("Gemini call failed for correlationId={}: {}", correlationId, e.getMessage());
-            return fallbackReport(e.getMessage());
+            log.error("Gemini call failed for correlationId={}: {}", message.getCorrelationId(), e.getMessage());
+            return fallbackSummary(heuristics, findings, e.getMessage());
         }
     }
 
-    private String buildPrompt(String correlationId, String slowestUrl,
-                               String slowestMethod, long durationMs,
-                               List<String> lokiLogs) {
-        String logsText = lokiLogs.isEmpty()
-                ? "No logs available."
-                : String.join("\n", lokiLogs.subList(0, Math.min(lokiLogs.size(), 50)));
+    private String buildPrompt(KafkaHarMessage message, StructuredFindings findings,
+                               RcaHeuristicsResult heuristics, List<String> logLines) {
+        String contextJson = contextBuilder.buildJson(message, findings, heuristics);
 
+        String logSample = logLines.isEmpty()
+                ? "No additional log snippets."
+                : String.join("\n", logLines.subList(0, Math.min(logLines.size(), 12)));
 
         return """
-        You are an expert site reliability engineer performing root cause analysis.
-        
-        INCIDENT SUMMARY:
-        - Correlation ID: %s
-        - Slowest Request: [%s] %s
-        - Duration: %d ms
-        
-        APPLICATION LOGS:
+        You are an expert SRE writing a plain-English RCA summary for engineers.
+
+        CLASSIFICATION IS ALREADY DECIDED — do not change it.
+        Use the RCA context packet below. It includes HAR issues, metric incident-vs-baseline
+        comparisons, triggered rules with strengths, and disambiguation notes.
+
+        When citing Grafana metrics:
+        - Prefer incident vs baseline interpretation from metricComparisons
+        - Say when a metric is chronically high but NOT anomalous (verdict=normal, low ratio)
+        - Mention confidence drivers (sourceAgreement, category scores)
+
+        Do not mention stub/fake pods (rca-pod-*). Use the real pod name from the packet.
+
+        RCA CONTEXT PACKET:
         %s
-        
-        TASK:
-        Analyze the above and respond ONLY with a valid JSON object.
-        No markdown, no backticks, no explanation outside the JSON.
-        Use plain text only in all string values — no special characters.
-        Exact format required:
+
+        OPTIONAL RAW LOG SNIPPETS:
+        %s
+
+        Respond ONLY with valid JSON:
         {
-          "faultClassification": "<DATABASE_BOTTLENECK|CPU_SATURATION|MEMORY_PRESSURE|NETWORK_TIMEOUT|UNKNOWN>",
-          "confidenceScore": <0.0 to 1.0>,
-          "summary": "<plain text summary, no backticks or special chars>",
-          "evidence": ["<point 1>", "<point 2>"],
-          "recommendedActions": ["<action 1>", "<action 2>"]
+          "summary": "<2-4 sentences referencing dominant HAR phase, key metric comparisons, and backend evidence>",
+          "recommendedActions": ["<action 1>", "<action 2>", "<action 3>"]
         }
-        """.formatted(correlationId, slowestMethod, slowestUrl, durationMs, logsText);
+        """.formatted(contextJson, logSample);
     }
 
-    private RcaReport parseGeminiResponse(String rawResponse) {
+    private GeminiSummary parseGeminiResponse(String rawResponse) {
         try {
             JsonNode root = objectMapper.readTree(rawResponse);
             String text = root
@@ -108,41 +122,31 @@ public class GeminiService {
                     .path("text").asText();
 
             text = text.replaceAll("```json", "").replaceAll("```", "").trim();
-
             JsonNode json = objectMapper.readTree(text);
-
-            RcaReport report = new RcaReport();
-            report.setFaultClassification(
-                    FaultType.valueOf(json.path("faultClassification").asText("UNKNOWN"))
-            );
-            report.setConfidenceScore(json.path("confidenceScore").asDouble(0.5));
-            report.setSummary(json.path("summary").asText("No summary available."));
-
-            List<String> evidence = objectMapper.convertValue(
-                    json.path("evidence"), objectMapper.getTypeFactory()
-                            .constructCollectionType(List.class, String.class));
-            report.setEvidence(evidence);
 
             List<String> actions = objectMapper.convertValue(
                     json.path("recommendedActions"), objectMapper.getTypeFactory()
                             .constructCollectionType(List.class, String.class));
-            report.setRecommendedActions(actions);
 
-            return report;
+            return new GeminiSummary(
+                    json.path("summary").asText("No summary available."),
+                    actions != null ? actions : List.of()
+            );
 
         } catch (Exception e) {
             log.error("Failed to parse Gemini response: {}", e.getMessage());
-            return fallbackReport("Parse error: " + e.getMessage());
+            return new GeminiSummary("Summary unavailable: " + e.getMessage(), List.of());
         }
     }
 
-    private RcaReport fallbackReport(String reason) {
-        RcaReport report = new RcaReport();
-        report.setFaultClassification(FaultType.UNKNOWN);
-        report.setConfidenceScore(0.0);
-        report.setSummary("Analysis failed: " + reason);
-        report.setEvidence(List.of());
-        report.setRecommendedActions(List.of("Retry analysis manually"));
-        return report;
+    private GeminiSummary fallbackSummary(RcaHeuristicsResult heuristics, StructuredFindings findings,
+                                          String reason) {
+        String dominant = findings.getHarTimeline() != null && findings.getHarTimeline().getDominantPhase() != null
+                ? findings.getHarTimeline().getDominantPhase()
+                : "unknown phase";
+        String summary = "Rule engine classified this as %s (confidence %.0f%%). Dominant phase: %s. LLM unavailable: %s"
+                .formatted(heuristics.getPrimaryCategory().label(),
+                        heuristics.getConfidence() * 100, dominant, reason);
+        return new GeminiSummary(summary, List.of());
     }
 }
