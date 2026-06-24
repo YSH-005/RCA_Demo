@@ -11,7 +11,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Instant;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.UUID;
 
 @Slf4j
@@ -35,7 +36,7 @@ public class RcaCommands implements CommandLineRunner {
         }
 
         switch (args[0]) {
-            case "submit" -> handleSubmit(args);
+            case "analyze" -> handleAnalyze(args);
             case "status" -> handleStatus(args);
             case "report" -> handleReport(args);
             case "poll"   -> handlePoll(args);
@@ -43,35 +44,48 @@ public class RcaCommands implements CommandLineRunner {
         }
     }
 
-    private void handleSubmit(String[] args) throws Exception {
-        if (args.length < 5) {
-            System.out.println("Usage: submit <url> <method> <durationMs> <statusCode>");
+    private void handleAnalyze(String[] args) throws Exception {
+        String harPath = null;
+        String from = null;
+        String to = null;
+
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--har" -> harPath = args[++i];
+                case "--from" -> from = args[++i];
+                case "--to" -> to = args[++i];
+                default -> throw new IllegalArgumentException("Unknown option: " + args[i]);
+            }
+        }
+
+        if (harPath == null) {
+            System.out.println("Usage: analyze --har <file.har> [--from <iso>] [--to <iso>]");
             return;
         }
-        String url        = args[1];
-        String method     = args[2];
-        long   durationMs = Long.parseLong(args[3]);
-        int    status     = Integer.parseInt(args[4]);
-        String corrId     = UUID.randomUUID().toString();
 
-        String body = mapper.writeValueAsString(java.util.Map.of(
-                "correlationId",  corrId,
-                "slowestUrl",     url,
-                "slowestMethod",  method,
-                "durationMs",     durationMs,
-                "responseStatus", status,
-                "timestamp",      Instant.now().toString()
-        ));
+        Path file = Path.of(harPath);
+        if (!Files.exists(file)) {
+            System.out.println("HAR file not found: " + harPath);
+            return;
+        }
+
+        String boundary = "----RcaBoundary" + UUID.randomUUID();
+        byte[] body = buildMultipartBody(boundary, file, from, to);
 
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(ingestionUrl))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
 
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-        JsonNode json = mapper.readTree(resp.body());
+        if (resp.statusCode() >= 400) {
+            System.out.println("Analyze failed: HTTP " + resp.statusCode());
+            System.out.println(resp.body());
+            return;
+        }
 
+        JsonNode json = mapper.readTree(resp.body());
         System.out.println("╔══════════════════════════════════════════╗");
         System.out.println("║           RCA Job Submitted              ║");
         System.out.println("╠══════════════════════════════════════════╣");
@@ -79,8 +93,32 @@ public class RcaCommands implements CommandLineRunner {
         System.out.printf ("║  Status  : %-30s ║%n", json.path("status").asText());
         System.out.printf ("║  Created : %-30s ║%n", json.path("createdAt").asText());
         System.out.println("╚══════════════════════════════════════════╝");
-        System.out.println("\nRun: status <jobId>   to check progress");
-        System.out.println("Run: poll   <jobId>   to wait for completion");
+        System.out.println("\nRun: poll <jobId> to wait for completion");
+    }
+
+    private byte[] buildMultipartBody(String boundary, Path harFile, String from, String to) throws Exception {
+        String filePart = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + harFile.getFileName() + "\"\r\n"
+                + "Content-Type: application/json\r\n\r\n";
+        String end = "\r\n--" + boundary + "--\r\n";
+
+        var baos = new java.io.ByteArrayOutputStream();
+        baos.write(filePart.getBytes());
+        baos.write(Files.readAllBytes(harFile));
+
+        if (from != null) {
+            baos.write(("\r\n--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"from\"\r\n\r\n"
+                    + from).getBytes());
+        }
+        if (to != null) {
+            baos.write(("\r\n--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"to\"\r\n\r\n"
+                    + to).getBytes());
+        }
+
+        baos.write(end.getBytes());
+        return baos.toByteArray();
     }
 
     private void handleStatus(String[] args) throws Exception {
@@ -149,15 +187,50 @@ public class RcaCommands implements CommandLineRunner {
     private void printFullReport(JsonNode job) {
         printJobSummary(job);
 
+        JsonNode telemetry = job.path("telemetry");
+        if (!telemetry.isMissingNode() && !telemetry.isNull()) {
+            System.out.println("\nTelemetry:");
+            System.out.printf("  requestId : %s%n", telemetry.path("requestId").asText("-"));
+            System.out.printf("  api       : %s / %s%n",
+                    telemetry.path("harApiKind").asText("-"),
+                    telemetry.path("harApiName").asText("-"));
+            System.out.printf("  url       : %s%n", telemetry.path("slowestUrl").asText("-"));
+            System.out.printf("  har wait  : %s ms%n", telemetry.path("harWaitMs").asText("-"));
+            System.out.printf("  pod       : %s%n", telemetry.path("podName").asText("-"));
+            int kibanaCount = telemetry.path("kibanaLogs").isArray() ? telemetry.path("kibanaLogs").size() : 0;
+            int graylogCount = telemetry.path("graylogLogs").isArray() ? telemetry.path("graylogLogs").size() : 0;
+            System.out.printf("  kibana    : %d log(s)%n", kibanaCount);
+            System.out.printf("  graylog   : %d log(s)%n", graylogCount);
+        }
+
         JsonNode report = job.path("rcaReport");
         if (report.isMissingNode() || report.isNull()) {
             System.out.println("\nNo RCA report available yet.");
             return;
         }
 
+        JsonNode findings = report.path("structuredFindings");
+        if (!findings.isMissingNode() && findings.has("observabilitySources")) {
+            JsonNode sources = findings.path("observabilitySources");
+            System.out.printf("%nObservability: kibana=%s graylog=%s grafana=%s%n",
+                    sources.path("kibana").asText("-"),
+                    sources.path("graylog").asText("-"),
+                    sources.path("grafana").asText("-"));
+        }
+
+        JsonNode scores = report.path("categoryScores");
+        if (scores.isObject() && !scores.isEmpty()) {
+            System.out.print("Category scores: ");
+            scores.fields().forEachRemaining(e ->
+                    System.out.printf("%s=%.2f ", e.getKey(), e.getValue().asDouble()));
+            System.out.println();
+        }
+
         System.out.println("\n╔══════════════════════════════════════════╗");
         System.out.println("║              RCA Report                  ║");
         System.out.println("╠══════════════════════════════════════════╣");
+        System.out.printf ("║  Bottleneck  : %-26s ║%n",
+                report.path("bottleneckCategory").asText(report.path("faultClassification").asText()));
         System.out.printf ("║  Fault       : %-26s ║%n",
                 report.path("faultClassification").asText());
         System.out.printf ("║  Confidence  : %-26s ║%n",
@@ -190,8 +263,8 @@ public class RcaCommands implements CommandLineRunner {
                 RCA CLI — Root Cause Analysis Tool
                 ════════════════════════════════════
                 Commands:
-                  submit <url> <method> <durationMs> <statusCode>
-                      Submit a new RCA job
+                  analyze --har <file.har> [--from <iso>] [--to <iso>]
+                      Upload a HAR file for RCA
                       
                   status <jobId>
                       Check job status
@@ -203,9 +276,9 @@ public class RcaCommands implements CommandLineRunner {
                       Wait for job completion and print report
                       
                 Examples:
-                  submit https://api.example.com/users GET 5000 500
-                  status 6a259072788a801e0c0741cc
-                  poll   6a259072788a801e0c0741cc 120
+                  analyze --har capture.har
+                  analyze --har capture.har --from 2026-06-22T07:16:09Z --to 2026-06-22T07:31:09Z
+                  poll 6a259072788a801e0c0741cc 120
                 """);
     }
 }

@@ -1,6 +1,6 @@
 spring:
   config:
-    import: optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
+    import: optional:file:${RCA_ENV_FILE:${user.dir}/.env}[.properties],optional:file:${user.dir}/../.env[.properties],optional:file:${user.home}/IdeaProjects/RCA/.env[.properties]
   application:
     name: rca-query-service
   data:

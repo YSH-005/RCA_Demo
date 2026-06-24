@@ -5,5 +5,6 @@ public enum FaultType {
     CPU_SATURATION,
     MEMORY_PRESSURE,
     NETWORK_TIMEOUT,
+    UNHANDLED_EXCEPTION,
     UNKNOWN
 }

@@ -88,3 +88,5 @@ rca-query-service/target/
 # Optional: ignore local config overrides
 application-local.yml
 application-local.properties
+
+scripts/*.sh
