@@ -1,11 +1,14 @@
 package com.rca.analyzer.har;
 
+import com.rca.common.har.HarApiTier;
+import com.rca.common.har.HarDurationStats;
 import com.rca.common.har.HarParser;
+import com.rca.common.har.HarSelectionPolicy;
 import com.rca.common.har.HarSelectionResult;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -13,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class HarParserTest {
 
     @Test
-    void selectSlow_includesAllPriorityEndpointsAboveThreshold() {
+    void selectSlow_includesAllPriorityEndpointsAboveFloor() {
         String har = """
                 {
                   "log": {
@@ -26,10 +29,45 @@ class HarParserTest {
                 """;
 
         HarSelectionResult result = HarParser.selectSlow(
-                har.getBytes(StandardCharsets.UTF_8), null, null, 2000);
+                har.getBytes(StandardCharsets.UTF_8), null, null, 0);
 
         assertEquals(2, result.getSlowEntries().size());
         assertTrue(result.getSlowEntries().stream().anyMatch(e -> "universalCases".equals(e.getApiName())));
         assertEquals("universalCases", result.getPrimary().getApiName());
+        assertEquals(HarApiTier.CRITICAL, result.getPrimary().getTier());
+        assertTrue(result.getSelectionSummary().contains("IQR"));
+    }
+
+    @Test
+    void selectSlow_usesIqrToIgnoreFastNoise() {
+        String har = """
+                {
+                  "log": {
+                    "entries": [
+                      {"startedDateTime":"2026-06-22T07:20:00.000Z","time":80,"request":{"method":"POST","url":"https://x/ui/graphql/care/caseStreamFeed","headers":[]},"response":{"status":200},"timings":{"wait":70,"receive":5}},
+                      {"startedDateTime":"2026-06-22T07:20:01.000Z","time":95,"request":{"method":"POST","url":"https://x/ui/graphql/care/caseStreamFeed","headers":[]},"response":{"status":200},"timings":{"wait":81,"receive":2}},
+                      {"startedDateTime":"2026-06-22T07:20:02.000Z","time":120,"request":{"method":"POST","url":"https://x/ui/graphql/care/caseStreamFeed","headers":[]},"response":{"status":200},"timings":{"wait":100,"receive":10}},
+                      {"startedDateTime":"2026-06-22T07:20:03.000Z","time":5000,"request":{"method":"POST","url":"https://x/ui/graphql/care/universalCases","headers":[{"name":"x-request-id","value":"space-slow"}]},"response":{"status":200},"timings":{"wait":4900,"receive":50}}
+                    ]
+                  }
+                }
+                """;
+
+        HarSelectionResult result = HarParser.selectSlow(
+                har.getBytes(StandardCharsets.UTF_8), null, null, 0);
+
+        assertEquals(1, result.getSlowEntries().size());
+        assertEquals("universalCases", result.getPrimary().getApiName());
+        assertTrue(result.getIqrThresholdMs() >= HarSelectionPolicy.DEFAULT_MIN_SLOW_MS);
+    }
+
+    @Test
+    void durationStats_computesTukeyFence() {
+        HarDurationStats stats = HarDurationStats.fromDurations(
+                List.of(50L, 80L, 95L, 120L, 5000L), 200L);
+
+        assertEquals(95L, stats.getMedianMs());
+        assertTrue(stats.getOutlierThresholdMs() >= 200L);
+        assertTrue(stats.getOutlierThresholdMs() <= 5000L);
     }
 }

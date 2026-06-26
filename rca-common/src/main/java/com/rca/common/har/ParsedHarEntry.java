@@ -15,6 +15,8 @@ public class ParsedHarEntry {
     private String apiKind;
     /** GQL operation name or REST path suffix, e.g. caseStreamFeed or /feed */
     private String apiName;
+    private boolean priority;
+    private HarApiTier tier;
     private long durationMs;
     private int responseStatus;
     private Instant eventTime;

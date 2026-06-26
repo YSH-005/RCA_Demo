@@ -6,15 +6,17 @@ package com.rca.common.har;
 public final class HarSelectionPolicy {
 
     /** Default minimum duration (ms) when caller passes slowThresholdMs=0. */
-    public static final long DEFAULT_MIN_SLOW_MS = 2000L;
-    /** Hard cap on slow APIs analyzed per HAR. */
-    public static final int MAX_SLOW_ENTRIES = 6;
-    /** All four Sprinklr priority endpoints can be included when slow. */
-    public static final int MAX_PRIORITY_ENTRIES = 4;
-    /**
-     * Non-priority API included only if duration &gt;= primaryDuration × this share.
-     */
-    public static final double SECONDARY_SHARE_OF_PRIMARY = 0.35;
+    public static final long DEFAULT_MIN_SLOW_MS = 200L;
+    /** Hard cap on APIs analyzed per HAR. */
+    public static final int MAX_SLOW_ENTRIES = 10;
+    /** Tukey fence multiplier: Q3 + multiplier × IQR. */
+    public static final double IQR_MULTIPLIER = 1.5;
+    /** Payload size (bytes) for side-large tier and forensics. */
+    public static final long LARGE_PAYLOAD_BYTES = 500_000L;
+    /** Receive time must be at least this share of total for side-large. */
+    public static final double SIDE_LARGE_RECEIVE_SHARE = 0.35;
+    /** Wait must stay below this share for side-large (download-dominated). */
+    public static final double SIDE_LARGE_MAX_WAIT_SHARE = 0.50;
 
     private HarSelectionPolicy() {
     }
@@ -24,5 +26,15 @@ public final class HarSelectionPolicy {
             return DEFAULT_MIN_SLOW_MS;
         }
         return slowThresholdMs;
+    }
+
+    public static boolean isEnterpriseHeavyEndpoint(String apiName) {
+        if (apiName == null || apiName.isBlank()) {
+            return false;
+        }
+        return switch (apiName) {
+            case "caseStreamFeed", "universalCases", "paginatedAssociatedMessagesForCase" -> true;
+            default -> false;
+        };
     }
 }

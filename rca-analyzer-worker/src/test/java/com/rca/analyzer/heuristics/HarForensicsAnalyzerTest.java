@@ -95,7 +95,7 @@ class HarForensicsAnalyzerTest {
 
         assertTrue(ids.contains("P01_high_ttfb"));
         assertTrue(ids.contains("P06_polling"));
-        assertTrue(ids.contains("P11_api_over_fetching"));
+        assertTrue(!ids.contains("P11_api_over_fetching"));
         assertTrue(ids.contains("P12_unoptimized_images"));
     }
 }

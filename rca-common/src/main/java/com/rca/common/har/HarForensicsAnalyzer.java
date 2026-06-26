@@ -30,7 +30,6 @@ public final class HarForensicsAnalyzer {
     private static final long CONNECT_MS = 300;
     private static final long SSL_MS = 300;
     private static final long MIN_BODY_FOR_COMPRESSION = 1024;
-    private static final long OVER_FETCH_BYTES = 500_000;
     private static final long LARGE_IMAGE_BYTES = 200_000;
     private static final int POLLING_MIN_CALLS = 4;
     private static final long POLLING_MAX_GAP_MS = 10_000;
@@ -86,7 +85,8 @@ public final class HarForensicsAnalyzer {
                 .method(entry.getMethod())
                 .apiKind(entry.getApiKind())
                 .apiName(entry.getApiName())
-                .priority(isPriority(entry.getApiName()))
+                .priority(entry.isPriority())
+                .tier(entry.getTier())
                 .durationMs(entry.getDurationMs())
                 .waitMs(entry.getWaitMs())
                 .blockedMs(entry.getBlockedMs())
@@ -106,13 +106,6 @@ public final class HarForensicsAnalyzer {
             builder.cacheHeader(snap.getCacheHeader());
         }
         return builder.build();
-    }
-
-    private static boolean isPriority(String apiName) {
-        return switch (apiName) {
-            case "caseStreamFeed", "universalCases", "paginatedAssociatedMessagesForCase", "/feed" -> true;
-            default -> false;
-        };
     }
 
     private static void detectHighTtfb(List<HarForensicsFinding> findings, List<SlowHarEntry> slow) {
@@ -356,8 +349,11 @@ public final class HarForensicsAnalyzer {
             if (!entry.isApiLike()) {
                 continue;
             }
+            if (HarSelectionPolicy.isEnterpriseHeavyEndpoint(entry.getApiName())) {
+                continue;
+            }
             long size = Math.max(entry.getBodySize(), entry.getContentSize());
-            if (size >= OVER_FETCH_BYTES) {
+            if (size >= HarSelectionPolicy.LARGE_PAYLOAD_BYTES) {
                 findings.add(finding("P11_api_over_fetching", "API over-fetching",
                         "Very large API response body",
                         "response size=%d bytes url=%s".formatted(size, entry.getUrl()),
