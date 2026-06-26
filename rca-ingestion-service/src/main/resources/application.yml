@@ -20,12 +20,18 @@ spring:
         username="${REDPANDA_USERNAME}"
         password="${REDPANDA_PASSWORD}";
 
+  servlet:
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 512MB
+      # Spill large HAR captures to disk instead of holding full file in heap during parse
+      file-size-threshold: 2MB
+
 server:
   port: 8081
-
-spring.servlet.multipart:
-  max-file-size: 50MB
-  max-request-size: 50MB
+  tomcat:
+    max-swallow-size: -1
+    max-http-form-post-size: 512MB
 
 logging:
   level:

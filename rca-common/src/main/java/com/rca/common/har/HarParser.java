@@ -57,77 +57,19 @@ public final class HarParser {
                     .filter(HarParser::isApiLikeEntry)
                     .toList();
 
-            List<ParsedHarEntry> aboveThreshold = new ArrayList<>();
+            List<ParsedHarEntry> parsedCandidates = new ArrayList<>();
             for (JsonNode entry : apiCandidates) {
-                long duration = Math.round(entry.path("time").asDouble(0));
-                if (duration >= minSlowMs) {
-                    aboveThreshold.add(toParsedEntry(entry, from, to));
-                }
+                parsedCandidates.add(toParsedEntry(entry, from, to));
             }
 
-            if (aboveThreshold.isEmpty()) {
+            if (parsedCandidates.isEmpty()) {
                 JsonNode fallback = findSlowestEntry(entries, slowThresholdMs);
-                ParsedHarEntry primary = toParsedEntry(fallback, from, to);
-                return HarSelectionResult.builder()
-                        .primary(primary)
-                        .slowEntries(List.of(primary))
-                        .totalApiCandidates(apiCandidates.size())
-                        .aboveThresholdCount(0)
-                        .selectionSummary("1 entry (only above-threshold fallback)")
-                        .build();
+                parsedCandidates.add(toParsedEntry(fallback, from, to));
             }
 
-            List<ParsedHarEntry> prioritySlow = aboveThreshold.stream()
-                    .filter(e -> isPriorityApi(e.getApiKind(), e.getApiName(), e.getUrl()))
-                    .sorted(Comparator.comparingLong(ParsedHarEntry::getDurationMs).reversed())
-                    .limit(HarSelectionPolicy.MAX_PRIORITY_ENTRIES)
-                    .toList();
-
-            ParsedHarEntry primary = prioritySlow.isEmpty()
-                    ? aboveThreshold.stream().max(Comparator.comparingLong(ParsedHarEntry::getDurationMs)).orElseThrow()
-                    : prioritySlow.get(0);
-
-            LinkedHashSet<String> seen = new LinkedHashSet<>();
-            List<ParsedHarEntry> selected = new ArrayList<>();
-            for (ParsedHarEntry entry : prioritySlow) {
-                if (seen.add(dedupeKey(entry))) {
-                    selected.add(entry);
-                }
-            }
-
-            long primaryDuration = primary.getDurationMs();
-            double secondaryMin = primaryDuration * HarSelectionPolicy.SECONDARY_SHARE_OF_PRIMARY;
-            aboveThreshold.stream()
-                    .filter(e -> !isPriorityApi(e.getApiKind(), e.getApiName(), e.getUrl()))
-                    .filter(e -> e.getDurationMs() >= secondaryMin)
-                    .sorted(Comparator.comparingLong(ParsedHarEntry::getDurationMs).reversed())
-                    .forEach(e -> {
-                        if (selected.size() < HarSelectionPolicy.MAX_SLOW_ENTRIES && seen.add(dedupeKey(e))) {
-                            selected.add(e);
-                        }
-                    });
-
-            if (seen.add(dedupeKey(primary)) || selected.isEmpty()) {
-                selected.removeIf(e -> dedupeKey(e).equals(dedupeKey(primary)));
-                selected.add(0, primary);
-            }
-
-            selected.sort(Comparator.comparingLong(ParsedHarEntry::getDurationMs).reversed());
-            alignQueryWindow(selected, from, to);
-
-            int priorityCount = (int) selected.stream()
-                    .filter(e -> isPriorityApi(e.getApiKind(), e.getApiName(), e.getUrl()))
-                    .count();
-            String summary = "%d slow APIs selected (threshold=%dms, %d priority, %d/%d API candidates)"
-                    .formatted(selected.size(), minSlowMs, priorityCount, aboveThreshold.size(), apiCandidates.size());
-
-            return HarSelectionResult.builder()
-                    .primary(primary)
-                    .slowEntries(selected)
-                    .totalApiCandidates(apiCandidates.size())
-                    .aboveThresholdCount(aboveThreshold.size())
-                    .selectionSummary(summary)
-                    .build();
+            HarSelectionResult result = HarApiSelector.select(parsedCandidates, minSlowMs);
+            alignQueryWindow(result.getSlowEntries(), from, to);
+            return result;
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -152,11 +94,7 @@ public final class HarParser {
         }
     }
 
-    private static String dedupeKey(ParsedHarEntry entry) {
-        return entry.getMethod() + " " + entry.getUrl();
-    }
-
-    private static boolean isPriorityApi(String apiKind, String apiName, String url) {
+    public static boolean isPriorityApi(String apiKind, String apiName, String url) {
         if (PRIORITY_ENDPOINTS.stream().anyMatch(p -> p.kind().equalsIgnoreCase(apiKind)
                 && p.name().equalsIgnoreCase(apiName))) {
             return true;

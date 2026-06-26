@@ -14,5 +14,7 @@ public class HarSelectionResult {
     private List<ParsedHarEntry> slowEntries = new ArrayList<>();
     private int totalApiCandidates;
     private int aboveThresholdCount;
+    private long sessionMedianMs;
+    private long iqrThresholdMs;
     private String selectionSummary;
 }

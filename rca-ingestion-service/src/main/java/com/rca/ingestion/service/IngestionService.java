@@ -98,7 +98,8 @@ public class IngestionService {
                 .method(entry.getMethod())
                 .apiKind(entry.getApiKind())
                 .apiName(entry.getApiName())
-                .priority(isPriority(entry))
+                .priority(entry.isPriority())
+                .tier(entry.getTier())
                 .durationMs(entry.getDurationMs())
                 .waitMs(entry.getWaitMs())
                 .blockedMs(entry.getBlockedMs())
@@ -113,12 +114,5 @@ public class IngestionService {
                 .cacheHeader(entry.getCacheHeader())
                 .fromCache(entry.isFromCache())
                 .build();
-    }
-
-    private boolean isPriority(ParsedHarEntry entry) {
-        return switch (entry.getApiName()) {
-            case "caseStreamFeed", "universalCases", "paginatedAssociatedMessagesForCase", "/feed" -> true;
-            default -> false;
-        };
     }
 }
