@@ -19,4 +19,7 @@ public class MetricComparison {
     private boolean triggered;
     private double strength;
     private String interpretation;
+    /** Wait-time weight of the slow API this comparison belongs to. */
+    private double analysisWeight;
+    private String requestId;
 }

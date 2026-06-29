@@ -79,6 +79,12 @@ public class HeuristicsProperties {
         private double threadQueue = 5;
         private long gcOldGenMs = 200;
         private long gcYoungGenMs = 100;
+        /** Mongo Review cpu_total fallback when baseline window is empty. */
+        private double mongoCpuTotal = 0.75;
+        /** Mongo Review iowait % fallback. */
+        private double mongoCpuIowaitPct = 15.0;
+        /** Mongo Review load_avg_one fallback. */
+        private double mongoLoadAvg = 4.0;
     }
 
     @Data

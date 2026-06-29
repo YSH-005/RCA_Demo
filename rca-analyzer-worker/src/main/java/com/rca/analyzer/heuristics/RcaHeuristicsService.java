@@ -1,13 +1,16 @@
 package com.rca.analyzer.heuristics;
 
 import com.rca.analyzer.config.HeuristicsProperties;
+import com.rca.analyzer.client.GrafanaIngressContext;
 import com.rca.common.enums.BottleneckCategory;
 import com.rca.common.enums.FaultType;
 import com.rca.common.model.HeuristicRuleHit;
 import com.rca.common.model.HarForensicsFinding;
 import com.rca.common.model.MetricComparison;
-import com.rca.common.model.RcaHeuristicsResult;
+import com.rca.common.error.ErrorContextExtractor;
+import com.rca.common.model.ErrorContext;
 import com.rca.common.model.SlowHarEntry;
+import com.rca.common.model.RcaHeuristicsResult;
 import com.rca.common.model.RcaReport;
 import com.rca.common.model.StructuredFindings;
 import com.rca.common.model.Telemetry;
@@ -123,8 +126,17 @@ public class RcaHeuristicsService {
 
     private List<HeuristicRuleHit> networkRules(Telemetry t, List<String> harIssues) {
         List<HeuristicRuleHit> hits = new ArrayList<>();
+        List<HarTimingView> views = harTimingViews(t);
+        long waitBasis = views.stream().mapToLong(v -> Math.max(0, v.waitMs())).sum();
+        if (waitBasis <= 0) {
+            waitBasis = views.stream().mapToLong(HarTimingView::durationMs).sum();
+        }
+        if (waitBasis <= 0) {
+            waitBasis = 1;
+        }
+        final long totalWaitBasis = waitBasis;
 
-        for (HarTimingView view : harTimingViews(t)) {
+        for (HarTimingView view : views) {
             String suffix = view.suffix();
             long total = view.durationMs();
             long networkLeg = view.dnsMs() + view.connectMs() + view.sslMs();
@@ -132,6 +144,7 @@ public class RcaHeuristicsService {
             long blocked = view.blockedMs();
             long receive = view.receiveMs();
             long send = view.sendMs();
+            double waitWeight = harWaitWeight(view, totalWaitBasis);
 
             long dns = view.dnsMs();
             long connect = view.connectMs();
@@ -141,13 +154,13 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H02_dns_slow", evaluate("har_dns_ms" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD, dns,
                         StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarDnsMs()),
-                        0.7, false,
+                        0.7 * waitWeight, false,
                         "HAR [%s] dns=%dms exceeds threshold %dms".formatted(
                                 view.label(), dns, properties.getThresholds().getHarDnsMs()))));
                 hits.add(trackHarIssue(harIssues, "H02_dns_slow", evaluate("har_dns_share" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.SHARE_OF_TOTAL, dns,
                         StatEvaluator.EvalContext.share(total, properties.getThresholds().getHarDnsShare()),
-                        0.65, false,
+                        0.65 * waitWeight, false,
                         "HAR [%s] dns=%dms is %.0f%% of total %dms".formatted(
                                 view.label(), dns, pct(dns, total), total))));
             }
@@ -156,7 +169,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H03_connect_slow", evaluate("har_connect_ms" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD, connect,
                         StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarConnectMs()),
-                        0.75, false,
+                        0.75 * waitWeight, false,
                         "HAR [%s] connect=%dms exceeds threshold %dms".formatted(
                                 view.label(), connect, properties.getThresholds().getHarConnectMs()))));
             }
@@ -165,7 +178,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H04_tls_slow", evaluate("har_ssl_ms" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD, ssl,
                         StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarSslMs()),
-                        0.75, false,
+                        0.75 * waitWeight, false,
                         "HAR [%s] ssl=%dms exceeds threshold %dms".formatted(
                                 view.label(), ssl, properties.getThresholds().getHarSslMs()))));
             }
@@ -174,7 +187,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H09_slow_api", evaluate("har_total_duration" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD, total,
                         StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarSlowApiMs()),
-                        0.55, false,
+                        0.55 * waitWeight, false,
                         "HAR [%s] total duration=%dms exceeds threshold %dms".formatted(
                                 view.label(), total, properties.getThresholds().getHarSlowApiMs()))));
             }
@@ -183,7 +196,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H01_browser_queuing", evaluate("har_blocked_share" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.SHARE_OF_TOTAL, blocked,
                         StatEvaluator.EvalContext.share(total, properties.getThresholds().getHarBlockedShare()),
-                        0.6, false,
+                        0.6 * waitWeight, false,
                         "HAR [%s] blocked/queuing=%dms is %.0f%% of total %dms".formatted(
                                 view.label(), blocked, pct(blocked, total), total))));
             }
@@ -191,21 +204,21 @@ public class RcaHeuristicsService {
             hits.add(trackHarIssue(harIssues, "H05_network_leg", evaluate("har_network_share" + suffix,
                     BottleneckCategory.A_NETWORK, StatFormula.SHARE_OF_TOTAL,
                     networkLeg, StatEvaluator.EvalContext.share(total, properties.getThresholds().getHarNetworkShare()),
-                    1.0, false,
+                    1.0 * waitWeight, false,
                     "HAR [%s] network leg=%dms is %.0f%% of total %dms".formatted(
                             view.label(), networkLeg, pct(networkLeg, total), total))));
 
             hits.add(trackHarIssue(harIssues, "H06_high_ttfb", evaluate("har_wait_share" + suffix,
                     BottleneckCategory.A_NETWORK, StatFormula.SHARE_OF_TOTAL,
                     wait, StatEvaluator.EvalContext.share(total, properties.getThresholds().getHarWaitShare()),
-                    0.9, false,
+                    0.9 * waitWeight, false,
                     "HAR [%s] TTFB wait=%dms is %.0f%% of total %dms".formatted(
                             view.label(), wait, pct(wait, total), total))));
 
             hits.add(trackHarIssue(harIssues, "H06_high_ttfb", evaluate("har_wait_ms" + suffix,
                     BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD,
                     wait, StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarWaitMs()),
-                    0.8, false,
+                    0.8 * waitWeight, false,
                     "HAR [%s] wait=%dms exceeds threshold %dms".formatted(
                             view.label(), wait, properties.getThresholds().getHarWaitMs()))));
 
@@ -213,7 +226,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H07_slow_download", evaluate("har_receive_share" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.SHARE_OF_TOTAL, receive,
                         StatEvaluator.EvalContext.share(total, properties.getThresholds().getHarReceiveShare()),
-                        0.7, false,
+                        0.7 * waitWeight, false,
                         "HAR [%s] content download=%dms is %.0f%% of total %dms".formatted(
                                 view.label(), receive, pct(receive, total), total))));
             }
@@ -222,7 +235,7 @@ public class RcaHeuristicsService {
                 hits.add(trackHarIssue(harIssues, "H08_slow_upload", evaluate("har_send_ms" + suffix,
                         BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD, send,
                         StatEvaluator.EvalContext.threshold(properties.getThresholds().getHarSendMs()),
-                        0.5, false,
+                        0.5 * waitWeight, false,
                         "HAR [%s] send=%dms exceeds threshold %dms".formatted(
                                 view.label(), send, properties.getThresholds().getHarSendMs()))));
             }
@@ -230,7 +243,7 @@ public class RcaHeuristicsService {
             if (view.responseStatus() >= 400) {
                 harIssues.add("H10_http_error");
                 hits.add(evaluate("har_http_error" + suffix, BottleneckCategory.D_EXCEPTION, StatFormula.PRESENT,
-                        1, StatEvaluator.EvalContext.present(), 0.9, false,
+                        1, StatEvaluator.EvalContext.present(), 0.9 * waitWeight, false,
                         "HAR [%s] HTTP status=%d".formatted(view.label(), view.responseStatus())));
             }
         }
@@ -250,27 +263,42 @@ public class RcaHeuristicsService {
 
         List<Double> kibanaNetwork = kibanaLongs(t, "networkTimeMs");
         if (!kibanaNetwork.isEmpty()) {
-            double maxNetwork = kibanaNetwork.stream().mapToDouble(d -> d).max().orElse(0);
-            hits.add(evaluate("kibana_network_time", BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD,
-                    maxNetwork, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaNetworkTimeMs()),
-                    0.85, false,
-                    "Kibana REQUEST_RECEIVED_NETWORK_TIME max=%.0fms".formatted(maxNetwork)));
+            if (t.getKibanaLogs() != null) {
+                for (Map<String, Object> log : t.getKibanaLogs()) {
+                    double network = doubleVal(log.get("networkTimeMs"));
+                    if (network <= 0) {
+                        continue;
+                    }
+                    double w = logAnalysisWeight(log, t);
+                    hits.add(evaluate("kibana_network_time_" + logSuffix(log), BottleneckCategory.A_NETWORK,
+                            StatFormula.THRESHOLD, network,
+                            StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaNetworkTimeMs()),
+                            0.85 * w, false,
+                            "Kibana [%s] REQUEST_RECEIVED_NETWORK_TIME=%.0fms".formatted(logLabel(log), network)));
+                }
+            } else {
+                double maxNetwork = kibanaNetwork.stream().mapToDouble(d -> d).max().orElse(0);
+                hits.add(evaluate("kibana_network_time", BottleneckCategory.A_NETWORK, StatFormula.THRESHOLD,
+                        maxNetwork, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaNetworkTimeMs()),
+                        0.85, false,
+                        "Kibana REQUEST_RECEIVED_NETWORK_TIME max=%.0fms".formatted(maxNetwork)));
 
-            if (kibanaNetwork.size() >= 2) {
-                double latest = kibanaNetwork.get(0);
-                hits.add(evaluate("kibana_network_median_deviation", BottleneckCategory.A_NETWORK,
-                        StatFormula.MEDIAN_DEVIATION, latest,
-                        StatEvaluator.EvalContext.medianDeviation(kibanaNetwork,
-                                properties.getThresholds().getLogTimingDeviation()),
-                        0.7, false,
-                        "Kibana network time %.0fms deviates from median %.0fms across %d logs".formatted(
-                                latest, StatEvaluator.median(kibanaNetwork), kibanaNetwork.size())));
+                if (kibanaNetwork.size() >= 2) {
+                    double latest = kibanaNetwork.get(0);
+                    hits.add(evaluate("kibana_network_median_deviation", BottleneckCategory.A_NETWORK,
+                            StatFormula.MEDIAN_DEVIATION, latest,
+                            StatEvaluator.EvalContext.medianDeviation(kibanaNetwork,
+                                    properties.getThresholds().getLogTimingDeviation()),
+                            0.7, false,
+                            "Kibana network time %.0fms deviates from median %.0fms across %d logs".formatted(
+                                    latest, StatEvaluator.median(kibanaNetwork), kibanaNetwork.size())));
+                }
             }
         }
 
         if (t.getGraylogLogs() != null) {
             for (Map<String, Object> log : t.getGraylogLogs()) {
-                if (!"ingress".equals(log.get("logKind"))) {
+                if (!GrafanaIngressContext.isIngressLog(String.valueOf(log.getOrDefault("logKind", "")))) {
                     continue;
                 }
                 long requestMs = longVal(log.get("requestTimeMs"));
@@ -281,7 +309,7 @@ public class RcaHeuristicsService {
                 hits.add(evaluate("graylog_ingress_upstream_share", BottleneckCategory.A_NETWORK,
                         StatFormula.SHARE_OF_TOTAL, upstreamMs,
                         StatEvaluator.EvalContext.share(requestMs, 0.80),
-                        0.75, isStub(log),
+                        0.75 * logAnalysisWeight(log, t), isStub(log),
                         "Graylog ingress upstream=%dms is %.0f%% of requestTime %dms".formatted(
                                 upstreamMs, pct(upstreamMs, requestMs), requestMs)));
             }
@@ -341,7 +369,7 @@ public class RcaHeuristicsService {
 
             double esRejected = doubleVal(metrics.get("es_threadpool_search_rejected"));
             if (esRejected > 0 || metrics.containsKey("es_query_latency_ms")) {
-                hits.add(evaluate("grafana_es_thread_rejected", BottleneckCategory.B_BACKEND_CPU,
+                hits.add(evaluate("grafana_es_thread_rejected", BottleneckCategory.C_DATABASE,
                         StatFormula.PRESENT, esRejected, StatEvaluator.EvalContext.present(),
                         1.0, stubMetrics,
                         "ES threadpool search rejected=%.0f on host %s".formatted(
@@ -359,15 +387,45 @@ public class RcaHeuristicsService {
 
         List<Double> waitTimes = kibanaLongs(t, "totalWaitTimeMs");
         if (!waitTimes.isEmpty()) {
-            double maxWait = waitTimes.stream().mapToDouble(d -> d).max().orElse(0);
-            hits.add(evaluate("kibana_total_wait", BottleneckCategory.B_BACKEND_CPU, StatFormula.THRESHOLD,
-                    maxWait, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaWaitTimeMs()),
-                    0.85, false,
-                    "Kibana totalWaitTime max=%.0fms".formatted(maxWait)));
+            if (t.getKibanaLogs() != null) {
+                for (Map<String, Object> log : t.getKibanaLogs()) {
+                    double wait = doubleVal(log.get("totalWaitTimeMs"));
+                    if (wait <= 0) {
+                        continue;
+                    }
+                    double w = logAnalysisWeight(log, t);
+                    hits.add(evaluate("kibana_total_wait_" + logSuffix(log), BottleneckCategory.B_BACKEND_CPU,
+                            StatFormula.THRESHOLD, wait,
+                            StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaWaitTimeMs()),
+                            0.85 * w, false,
+                            "Kibana [%s] totalWaitTime=%.0fms".formatted(logLabel(log), wait)));
+                }
+            } else {
+                double maxWait = waitTimes.stream().mapToDouble(d -> d).max().orElse(0);
+                hits.add(evaluate("kibana_total_wait", BottleneckCategory.B_BACKEND_CPU, StatFormula.THRESHOLD,
+                        maxWait, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaWaitTimeMs()),
+                        0.85, false,
+                        "Kibana totalWaitTime max=%.0fms".formatted(maxWait)));
+            }
         }
 
         List<Double> execTimes = kibanaLongs(t, "totalExecTimeMs");
-        if (!waitTimes.isEmpty() && !execTimes.isEmpty()) {
+        if (t.getKibanaLogs() != null && !t.getKibanaLogs().isEmpty()) {
+            for (Map<String, Object> log : t.getKibanaLogs()) {
+                double wait = doubleVal(log.get("totalWaitTimeMs"));
+                double exec = doubleVal(log.get("totalExecTimeMs"));
+                if (wait <= 0 || exec <= 0) {
+                    continue;
+                }
+                double w = logAnalysisWeight(log, t);
+                hits.add(evaluate("kibana_wait_exec_share_" + logSuffix(log), BottleneckCategory.B_BACKEND_CPU,
+                        StatFormula.SHARE_OF_TOTAL, wait,
+                        StatEvaluator.EvalContext.share(exec + wait, 0.45),
+                        0.75 * w, false,
+                        "Kibana [%s] wait=%.0fms vs exec+wait=%.0fms (queue pressure)".formatted(
+                                logLabel(log), wait, exec + wait)));
+            }
+        } else if (!waitTimes.isEmpty() && !execTimes.isEmpty()) {
             double wait = waitTimes.stream().mapToDouble(d -> d).max().orElse(0);
             double exec = execTimes.stream().mapToDouble(d -> d).max().orElse(1);
             hits.add(evaluate("kibana_wait_exec_share", BottleneckCategory.B_BACKEND_CPU, StatFormula.SHARE_OF_TOTAL,
@@ -389,10 +447,15 @@ public class RcaHeuristicsService {
                 continue;
             }
             BottleneckCategory category = grafanaMetricEvaluator.categoryFor(comparison.getMetric());
-            double weight = grafanaMetricEvaluator.weightFor(comparison.getMetric());
-            double contribution = stubMetrics ? 0 : weight * Math.min(1.0, comparison.getStrength());
+            double metricWeight = grafanaMetricEvaluator.weightFor(comparison.getMetric());
+            double apiWeight = comparisonAnalysisWeight(comparison, t);
+            double contribution = stubMetrics ? 0
+                    : apiWeight * metricWeight * Math.min(1.0, comparison.getStrength());
+            String ruleSuffix = comparison.getRequestId() != null && !comparison.getRequestId().isBlank()
+                    ? "_" + comparison.getRequestId().replaceAll("[^a-zA-Z0-9]", "_")
+                    : "";
             hits.add(HeuristicRuleHit.builder()
-                    .ruleId("grafana_cmp_" + comparison.getMetric())
+                    .ruleId("grafana_cmp_" + comparison.getMetric() + ruleSuffix)
                     .category(category)
                     .formula(comparison.getFormula())
                     .triggered(true)
@@ -442,9 +505,9 @@ public class RcaHeuristicsService {
         }
 
         static HarTimingView from(SlowHarEntry entry) {
-            String label = entry.getApiKind().isBlank()
-                    ? entry.getApiName()
-                    : entry.getApiKind() + "/" + entry.getApiName();
+            String apiKind = entry.getApiKind() != null ? entry.getApiKind() : "";
+            String apiName = entry.getApiName() != null ? entry.getApiName() : "";
+            String label = apiKind.isBlank() ? apiName : apiKind + "/" + apiName;
             return new HarTimingView(label, entry.getDurationMs(), entry.getWaitMs(),
                     entry.getBlockedMs(), entry.getReceiveMs(), entry.getSendMs(),
                     entry.getDnsMs(), entry.getConnectMs(), entry.getSslMs(),
@@ -474,6 +537,7 @@ public class RcaHeuristicsService {
         if (t.getGraylogLogs() != null) {
             for (Map<String, Object> log : t.getGraylogLogs()) {
                 boolean stub = isStub(log);
+                double logWeight = logAnalysisWeight(log, t);
                 String logKind = String.valueOf(log.getOrDefault("logKind", ""));
 
                 if ("perfstats".equals(logKind)) {
@@ -481,19 +545,26 @@ public class RcaHeuristicsService {
                     hits.add(evaluate("graylog_perfstats_" + log.get("statName"), BottleneckCategory.C_DATABASE,
                             StatFormula.THRESHOLD, taken,
                             StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaEsTimeMs()),
-                            0.6, stub,
+                            0.6 * logWeight, stub,
                             "Graylog perfstats [%s] timeTaken=%dms".formatted(log.get("statName"), taken)));
                     continue;
                 }
 
-                if (!"calltracking".equals(logKind) && longVal(log.get("esTimeTaken")) == 0) {
+                if (!"calltracking".equals(logKind) && !"access".equals(logKind)) {
                     continue;
                 }
 
                 long db = longVal(log.get("dbTimeTaken"));
+                long ch = longVal(log.get("chTimeTaken"));
+                if (ch > 0 && db == 0) {
+                    db = ch;
+                }
                 long es = longVal(log.get("esTimeTaken"));
                 long mongo = longVal(log.get("mongoTimeTaken"));
-                long store = db + es + mongo;
+                long store = longVal(log.get("totalDbTimeMs"));
+                if (store <= 0) {
+                    store = db + es + mongo;
+                }
                 if (store <= 0) {
                     continue;
                 }
@@ -502,32 +573,47 @@ public class RcaHeuristicsService {
                     apiTotal = store + 200;
                 }
                 String stream = String.valueOf(log.get("stream"));
-                hits.add(evaluate("graylog_store_share_" + stream, BottleneckCategory.C_DATABASE,
+                hits.add(evaluate("graylog_store_share_" + stream + logSuffix(log), BottleneckCategory.C_DATABASE,
                         StatFormula.SHARE_OF_TOTAL, store,
                         StatEvaluator.EvalContext.share(apiTotal, properties.getThresholds().getDbShareOfApi()),
-                        1.0, stub,
-                        "Graylog [%s] store time db=%d es=%d mongo=%d is %.0f%% of apiTotal %dms".formatted(
-                                stream, db, es, mongo, pct(store, apiTotal), apiTotal)));
+                        1.0 * logWeight, stub,
+                        "Graylog [%s] store time db/ch=%d es=%d mongo=%d totalDB=%d is %.0f%% of apiTotal %dms".formatted(
+                                logLabel(log), db, es, mongo, store, pct(store, apiTotal), apiTotal)));
             }
         }
 
-        List<Double> esTimes = kibanaLongs(t, "esTimeMs");
-        if (!esTimes.isEmpty()) {
-            double maxEs = esTimes.stream().mapToDouble(d -> d).max().orElse(0);
-            hits.add(evaluate("kibana_es_time", BottleneckCategory.C_DATABASE, StatFormula.THRESHOLD,
-                    maxEs, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaEsTimeMs()),
-                    1.0, false,
-                    "Kibana esTotalTimeTakenInMillis max=%.0fms".formatted(maxEs)));
+        if (t.getKibanaLogs() != null) {
+            for (Map<String, Object> log : t.getKibanaLogs()) {
+                double es = doubleVal(log.get("esTimeMs"));
+                if (es <= 0) {
+                    continue;
+                }
+                double w = logAnalysisWeight(log, t);
+                hits.add(evaluate("kibana_es_time_" + logSuffix(log), BottleneckCategory.C_DATABASE,
+                        StatFormula.THRESHOLD, es,
+                        StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaEsTimeMs()),
+                        1.0 * w, false,
+                        "Kibana [%s] esTotalTimeTakenInMillis=%.0fms".formatted(logLabel(log), es)));
+            }
+        } else {
+            List<Double> esTimes = kibanaLongs(t, "esTimeMs");
+            if (!esTimes.isEmpty()) {
+                double maxEs = esTimes.stream().mapToDouble(d -> d).max().orElse(0);
+                hits.add(evaluate("kibana_es_time", BottleneckCategory.C_DATABASE, StatFormula.THRESHOLD,
+                        maxEs, StatEvaluator.EvalContext.threshold(properties.getThresholds().getKibanaEsTimeMs()),
+                        1.0, false,
+                        "Kibana esTotalTimeTakenInMillis max=%.0fms".formatted(maxEs)));
 
-            if (esTimes.size() >= 2) {
-                double latest = esTimes.get(0);
-                hits.add(evaluate("kibana_es_median_deviation", BottleneckCategory.C_DATABASE,
-                        StatFormula.MEDIAN_DEVIATION, latest,
-                        StatEvaluator.EvalContext.medianDeviation(esTimes,
-                                properties.getThresholds().getLogTimingDeviation()),
-                        0.8, false,
-                        "Kibana ES time %.0fms deviates from median %.0fms".formatted(
-                                latest, StatEvaluator.median(esTimes))));
+                if (esTimes.size() >= 2) {
+                    double latest = esTimes.get(0);
+                    hits.add(evaluate("kibana_es_median_deviation", BottleneckCategory.C_DATABASE,
+                            StatFormula.MEDIAN_DEVIATION, latest,
+                            StatEvaluator.EvalContext.medianDeviation(esTimes,
+                                    properties.getThresholds().getLogTimingDeviation()),
+                            0.8, false,
+                            "Kibana ES time %.0fms deviates from median %.0fms".formatted(
+                                    latest, StatEvaluator.median(esTimes))));
+                }
             }
         }
 
@@ -549,7 +635,9 @@ public class RcaHeuristicsService {
                 boolean error = "ERROR".equalsIgnoreCase(String.valueOf(log.get("level")));
                 boolean hasException = log.get("exceptionType") != null
                         && !String.valueOf(log.get("exceptionType")).isBlank();
-                if (error || hasException) {
+                boolean hasStack = log.get("exceptionStackTrace") != null
+                        && ErrorContextExtractor.hasStackTrace(String.valueOf(log.get("exceptionStackTrace")));
+                if (error || hasException || hasStack) {
                     errorCount++;
                 }
             }
@@ -557,10 +645,98 @@ public class RcaHeuristicsService {
         hits.add(evaluate("kibana_error_logs", BottleneckCategory.D_EXCEPTION, StatFormula.PRESENT,
                 errorCount, StatEvaluator.EvalContext.present(), 1.5, false,
                 "Kibana error/exception log entries=%d".formatted(errorCount)));
+
+        ErrorContext errorContext = t.getErrorContext();
+        if (errorContext != null && !blank(errorContext.getExceptionType())) {
+            BottleneckCategory inferred = errorContext.getInferredCategory() != null
+                    ? errorContext.getInferredCategory() : BottleneckCategory.D_EXCEPTION;
+            double weight = inferred == BottleneckCategory.D_EXCEPTION ? 1.8 : 1.4;
+            hits.add(evaluate("kibana_exception_type", inferred, StatFormula.PRESENT,
+                    1, StatEvaluator.EvalContext.present(), weight, false,
+                    "Stack trace kind=%s exception=%s ref=%s — %s".formatted(
+                            blankOrDash(errorContext.getExceptionKind()),
+                            errorContext.getExceptionType(),
+                            blankOrDash(errorContext.getSupportReference()),
+                            blankOrDash(errorContext.getClassificationReason()))));
+            if (!blank(errorContext.getStackTraceSummary())) {
+                hits.add(evaluate("kibana_exception_frames", inferred, StatFormula.PRESENT,
+                        1, StatEvaluator.EvalContext.present(), 0.5, false,
+                        "Top frames:\n%s".formatted(errorContext.getStackTraceSummary())));
+            }
+        } else if (errorContext != null && ErrorContextExtractor.hasStackTrace(errorContext.getExceptionStackTrace())) {
+            String rootType = ErrorContextExtractor.parseRootExceptionType(errorContext.getExceptionStackTrace());
+            hits.add(evaluate("kibana_exception_stack", BottleneckCategory.D_EXCEPTION, StatFormula.PRESENT,
+                    1, StatEvaluator.EvalContext.present(), 1.6, false,
+                    "Exception from stack trace=%s".formatted(rootType)));
+        }
+        if (t.getGraylogLogs() != null) {
+            for (Map<String, Object> log : t.getGraylogLogs()) {
+                String controllerError = String.valueOf(log.getOrDefault("ingressControllerError", ""));
+                if (controllerError.isBlank()) {
+                    continue;
+                }
+                hits.add(evaluate("graylog_ingress_controller_" + controllerError, BottleneckCategory.D_EXCEPTION,
+                        StatFormula.PRESENT, 1, StatEvaluator.EvalContext.present(), 0.7, isStub(log),
+                        "Ingress controller issue: %s on %s".formatted(
+                                controllerError, log.getOrDefault("controllerPod", log.get("hostname")))));
+            }
+        }
         return hits;
     }
 
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static String blankOrDash(String value) {
+        return blank(value) ? "-" : value;
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private static double harWaitWeight(HarTimingView view, long totalWaitBasis) {
+        long leg = view.waitMs() > 0 ? view.waitMs() : view.durationMs();
+        if (leg <= 0 || totalWaitBasis <= 0) {
+            return 0;
+        }
+        return (double) leg / totalWaitBasis;
+    }
+
+    private static double logAnalysisWeight(Map<String, Object> log, Telemetry t) {
+        if (log != null) {
+            Object weight = log.get("analysisWeight");
+            if (weight instanceof Number number && number.doubleValue() > 0) {
+                return number.doubleValue();
+            }
+        }
+        return equalShareWeight(t);
+    }
+
+    private static double comparisonAnalysisWeight(MetricComparison comparison, Telemetry t) {
+        if (comparison != null && comparison.getAnalysisWeight() > 0) {
+            return comparison.getAnalysisWeight();
+        }
+        return equalShareWeight(t);
+    }
+
+    private static double equalShareWeight(Telemetry t) {
+        if (t.getSlowHarEntries() != null && !t.getSlowHarEntries().isEmpty()) {
+            return 1.0 / t.getSlowHarEntries().size();
+        }
+        return 1.0;
+    }
+
+    private static String logLabel(Map<String, Object> log) {
+        Object label = log.get("slowApiLabel");
+        if (label != null && !String.valueOf(label).isBlank()) {
+            return String.valueOf(label);
+        }
+        return String.valueOf(log.getOrDefault("correlationRequestId", "log"));
+    }
+
+    private static String logSuffix(Map<String, Object> log) {
+        return logLabel(log).replaceAll("[^a-zA-Z0-9]", "_");
+    }
 
     private HeuristicRuleHit evaluate(String ruleId, BottleneckCategory category, StatFormula formula,
                                       double value, StatEvaluator.EvalContext ctx,

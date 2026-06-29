@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.rca.analyzer.config.ObservabilityProperties;
+import com.rca.common.error.ErrorContextExtractor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -39,6 +40,17 @@ public class KibanaClient {
             return List.of();
         }
         return fetchLogs(requestId, from, to, errorIndex, "ERROR");
+    }
+
+    public List<Map<String, Object>> fetchBySupportReference(String supportReference, Instant from, Instant to) {
+        if (supportReference == null || supportReference.isBlank()) {
+            return List.of();
+        }
+        String errorIndex = properties.getKibana().getErrorIndexPattern();
+        String indexPattern = (errorIndex != null && !errorIndex.isBlank())
+                ? errorIndex
+                : properties.getKibana().getIndexPattern();
+        return fetchLogs(supportReference, from, to, indexPattern, null);
     }
 
     private List<Map<String, Object>> fetchLogsRetry(String requestId, Instant from, Instant to,
@@ -186,8 +198,30 @@ public class KibanaClient {
         entry.put("deploymentName", field(fields, source, useFields, "deploymentName"));
         entry.put("esHost", field(fields, source, useFields, "attributes.esHost"));
         entry.put("docType", field(fields, source, useFields, "attributes._doc_type"));
+
+        String attributesMsg = field(fields, source, useFields, "attributes.msg");
+        if (!attributesMsg.isBlank()) {
+            entry.put("attributesMsg", attributesMsg);
+            String supportReference = ErrorContextExtractor.extractSupportReference(attributesMsg);
+            if (!supportReference.isBlank()) {
+                entry.put("supportReference", supportReference);
+            }
+        }
+
+        String exceptionStackTrace = field(fields, source, useFields, "attributes.__exception_stackTrace");
+        if (!exceptionStackTrace.isBlank()) {
+            entry.put("exceptionStackTrace", exceptionStackTrace);
+            String rootType = ErrorContextExtractor.parseRootExceptionType(exceptionStackTrace);
+            if (!rootType.isBlank()) {
+                entry.put("exceptionType", rootType);
+            }
+        }
+
         if ("ERROR".equalsIgnoreCase(String.valueOf(entry.get("level")))) {
-            entry.put("exceptionType", field(fields, source, useFields, "attributes.exceptionType"));
+            String existingType = field(fields, source, useFields, "attributes.exceptionType");
+            if (!existingType.isBlank()) {
+                entry.put("exceptionType", existingType);
+            }
             entry.put("exceptionMessage", field(fields, source, useFields, "message"));
         }
         return entry;

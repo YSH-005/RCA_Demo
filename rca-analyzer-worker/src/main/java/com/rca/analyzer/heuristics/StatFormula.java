@@ -27,5 +27,14 @@ public enum StatFormula {
     /**
      * incident &gt; 0 while baseline max is below threshold (event anomaly).
      */
-    PRESENT_IF_BASELINE_LOW
+    PRESENT_IF_BASELINE_LOW,
+    /**
+     * value &lt; floor (e.g. MongoDown: 0 = down, 1 = up).
+     */
+    BELOW_THRESHOLD,
+    /**
+     * value &lt; floor while baseline &gt;= baselineCeiling (was healthy, became unhealthy).
+     * Used for {@code mongo_down} where 1 = up and 0 = down.
+     */
+    BELOW_IF_BASELINE_ABOVE
 }

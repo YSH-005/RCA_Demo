@@ -1,5 +1,7 @@
 package com.rca.analyzer.service;
 
+import com.rca.analyzer.client.GrafanaEsContext;
+import com.rca.analyzer.client.GrafanaMongoContext;
 import com.rca.common.model.MetricComparison;
 import com.rca.common.model.MetricStatSummary;
 
@@ -23,9 +25,22 @@ final class SyntheticGrafanaProvider {
 
         long esMs = maxFromGraylog(graylogLogs, "esTimeTaken");
         long mongoMs = maxFromGraylog(graylogLogs, "mongoTimeTaken");
+        long chMs = maxFromGraylog(graylogLogs, "chTimeTaken");
+        long totalDbMs = maxFromGraylog(graylogLogs, "totalDbTimeMs");
+        long apiTotalMs = maxFromGraylog(graylogLogs, "apiTotalMs");
         long waitMs = maxKibana(kibanaLogs, "totalWaitTimeMs");
         String esHost = firstEsHost(kibanaLogs, graylogLogs);
-        boolean pressure = waitMs >= 1500 || esMs >= 800;
+        String mongoHost = firstMongoHost(graylogLogs);
+
+        if (totalDbMs <= 0) {
+            totalDbMs = mongoMs + chMs + esMs;
+        }
+        if (apiTotalMs <= 0) {
+            apiTotalMs = Math.max(totalDbMs + 50, 100);
+        }
+
+        boolean dbPressure = totalDbMs >= 800 || chMs >= 800 || esMs >= 800;
+        boolean pressure = waitMs >= 1500 || dbPressure || apiTotalMs >= 1200;
 
         double baselineCpu = pressure ? 0.48 : 0.42;
         double incidentCpu = pressure ? 0.88 : 0.46;
@@ -39,6 +54,8 @@ final class SyntheticGrafanaProvider {
         double incidentEs = Math.max(esMs, 50);
         double baselineMongo = Math.max(mongoMs > 0 ? mongoMs * 0.4 : 200, 100);
         double incidentMongo = Math.max(mongoMs, 100);
+        double baselineCh = Math.max(chMs > 0 ? chMs * 0.3 : 300, 100);
+        double incidentCh = Math.max(chMs, 100);
 
         List<MetricComparison> comparisons = new ArrayList<>();
         comparisons.add(comparison("container_cpu_usage_rate", podName, incidentCpu, baselineCpu, pressure));
@@ -46,21 +63,44 @@ final class SyntheticGrafanaProvider {
         comparisons.add(comparison("thread_queue", podName, incidentQueue, baselineQueue, pressure));
         comparisons.add(eventComparison("thread_rejected", podName, pressure ? 4 : 0, 0));
         comparisons.add(comparison("gc_old_gen_ms", podName, incidentGc, baselineGc, pressure));
+        comparisons.add(comparison("container_cpu_throttle_pct", podName,
+                pressure ? 22.0 : 1.0, 0.5, pressure));
+        comparisons.add(eventComparison("pod_restarts_total", podName, pressure ? 1 : 0, 0));
+        comparisons.add(eventComparison("probe_readiness_failed", podName, pressure ? 2 : 0, 0));
+        if (pressure) {
+            comparisons.add(eventComparison("pod_terminated_reason", podName, 1, 0));
+            comparisons.add(comparison("pod_age_seconds", podName, 420, 86400, true));
+        }
         if (!esHost.isBlank() || esMs >= 500) {
-            comparisons.add(comparison("es_query_latency_ms", esHost.isBlank() ? "es-data-qa6-case1-es-1-b" : esHost,
+            String influxEsHost = GrafanaEsContext.resolveFromLogs(kibanaLogs, graylogLogs);
+            if (influxEsHost.isBlank() && !esHost.isBlank()) {
+                influxEsHost = GrafanaMongoContext.toInfluxHostname(esHost);
+            }
+            comparisons.add(comparison("es_query_latency_ms",
+                    influxEsHost.isBlank() ? "es-data-qa6-case1-es-1-b" : influxEsHost,
                     incidentEs, baselineEs, esMs >= 800));
             comparisons.add(eventComparison("es_threadpool_search_rejected",
-                    esHost.isBlank() ? "es-data-qa6-case1-es-1-b" : esHost,
+                    influxEsHost.isBlank() ? "es-data-qa6-case1-es-1-b" : influxEsHost,
                     esMs >= 1000 ? 3 : 0, 0));
         }
-        if (mongoMs >= 200) {
-            comparisons.add(comparison("mongo_scanned_objects", "mongo-qa6-shard-1",
-                    incidentMongo * 10, baselineMongo * 10, mongoMs >= 800));
+        if (mongoMs >= 50 || !mongoHost.isBlank()) {
+            String influxHost = GrafanaMongoContext.toInfluxHostname(mongoHost);
+            String host = influxHost.isBlank() ? "qa6-mongo-core-40" : influxHost;
+            comparisons.add(comparison("mongo_scanned_objects", host,
+                    incidentMongo * 10, baselineMongo * 10, mongoMs >= 200));
+            comparisons.add(comparison("mongo_cpu_total", host,
+                    pressure ? 0.92 : 0.45, 0.40, pressure && mongoMs >= 100));
+        }
+        if (chMs >= 200) {
+            comparisons.add(comparison("clickhouse_query_latency_ms", "qa6-clickhouse-analytics-1",
+                    incidentCh, baselineCh, chMs >= 800));
         }
 
         Map<String, Object> metrics = new LinkedHashMap<>();
         metrics.put("source", "stub");
         metrics.put("podName", podName);
+        metrics.put("apiTotalMs", apiTotalMs);
+        metrics.put("totalDbTimeMs", totalDbMs);
         for (MetricComparison c : comparisons) {
             if (c.getIncident() != null && c.getIncident().getSampleCount() > 0) {
                 metrics.put(c.getMetric(), c.getIncident().getP95());
@@ -149,6 +189,19 @@ final class SyntheticGrafanaProvider {
                 if (h != null && !String.valueOf(h).isBlank()) {
                     return String.valueOf(h);
                 }
+            }
+        }
+        return "";
+    }
+
+    private static String firstMongoHost(List<Map<String, Object>> graylog) {
+        if (graylog == null) {
+            return "";
+        }
+        for (Map<String, Object> log : graylog) {
+            Object h = log.get("mongoHost");
+            if (h != null && !String.valueOf(h).isBlank()) {
+                return String.valueOf(h);
             }
         }
         return "";

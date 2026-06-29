@@ -4,6 +4,8 @@ import com.rca.analyzer.config.ObservabilityProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rca.common.dto.KafkaHarMessage;
 import com.rca.common.enums.BottleneckCategory;
+import com.rca.common.error.ErrorContextMerger;
+import com.rca.common.model.ErrorContext;
 import com.rca.common.model.CriticalPathTimeline;
 import com.rca.common.model.RcaHeuristicsResult;
 import com.rca.common.model.StructuredFindings;
@@ -172,8 +174,51 @@ public class FindingsBuilder {
         map.put("errorCount", telemetry.getKibanaLogs().stream()
                 .filter(l -> "ERROR".equalsIgnoreCase(String.valueOf(l.get("level"))))
                 .count());
+        if (telemetry.getErrorContext() != null) {
+            ErrorContext ctx = telemetry.getErrorContext();
+            Map<String, Object> analysis = new LinkedHashMap<>();
+            if (!isBlank(ctx.getSupportReference())) {
+                map.put("supportReference", ctx.getSupportReference());
+            }
+            if (!isBlank(ctx.getExceptionType())) {
+                map.put("exceptionType", ctx.getExceptionType());
+            }
+            if (!isBlank(ctx.getErrorMessage())) {
+                map.put("errorMessage", truncate(ctx.getErrorMessage(), 200));
+            }
+            if (!isBlank(ctx.getExceptionKind())) {
+                analysis.put("kind", ctx.getExceptionKind());
+            }
+            if (ctx.getInferredCategory() != null) {
+                analysis.put("inferredCategory", ctx.getInferredCategory().name());
+            }
+            if (!isBlank(ctx.getClassificationReason())) {
+                analysis.put("reason", ctx.getClassificationReason());
+            }
+            if (!isBlank(ctx.getTopApplicationFrame())) {
+                analysis.put("topFrame", ctx.getTopApplicationFrame());
+            }
+            if (!isBlank(ctx.getStackTraceSummary())) {
+                analysis.put("stackTraceSummary", ctx.getStackTraceSummary());
+            }
+            analysis.put("infraMetricsRelevant", ctx.isInfraMetricsRelevant());
+            if (!analysis.isEmpty()) {
+                map.put("exceptionAnalysis", analysis);
+            }
+        }
         map.put("gqlOperation", firstNonBlank(telemetry, "gqlOperation"));
         return map;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static String truncate(String value, int maxLen) {
+        if (value == null || value.length() <= maxLen) {
+            return value;
+        }
+        return value.substring(0, maxLen) + "...";
     }
 
     private Map<String, Object> summarizeGraylog(Telemetry telemetry) {
@@ -181,27 +226,42 @@ public class FindingsBuilder {
         if (telemetry.getGraylogLogs() == null || telemetry.getGraylogLogs().isEmpty()) {
             return map;
         }
-        if (telemetry.getGraylogLogs().stream().allMatch(l -> "stub".equals(l.get("source")))) {
+        boolean allStub = telemetry.getGraylogLogs().stream().allMatch(l -> "stub".equals(l.get("source")));
+        if (allStub) {
             map.put("stub", true);
-            return map;
         }
-        long maxDb = 0, maxEs = 0, maxMongo = 0, maxPerf = 0, maxUpstream = 0;
-        int ingressCount = 0, calltrackingCount = 0, perfstatsCount = 0;
+
+        long maxDb = 0, maxEs = 0, maxMongo = 0, maxCh = 0, maxPerf = 0, maxUpstream = 0;
+        long maxTotalDb = 0, maxApiTotal = 0;
+        int ingressCount = 0, calltrackingCount = 0, perfstatsCount = 0, accessCount = 0;
+        String operationName = "", slowestStat = "";
+
         for (Map<String, Object> log : telemetry.getGraylogLogs()) {
-            if ("stub".equals(log.get("source"))) {
-                continue;
-            }
             String kind = String.valueOf(log.getOrDefault("logKind", ""));
             switch (kind) {
                 case "ingress" -> {
                     ingressCount++;
                     maxUpstream = Math.max(maxUpstream, longVal(log.get("upstreamResponseTimeMs")));
                 }
+                case "access" -> {
+                    accessCount++;
+                    operationName = firstNonBlank(operationName, str(log.get("operationName")));
+                    slowestStat = firstNonBlank(slowestStat, str(log.get("maxTimeTakenBy")));
+                    maxCh = Math.max(maxCh, longVal(log.get("chTimeTaken")));
+                    maxTotalDb = Math.max(maxTotalDb, longVal(log.get("totalDbTimeMs")));
+                    maxApiTotal = Math.max(maxApiTotal, longVal(log.get("apiTotalMs")));
+                    maxMongo = Math.max(maxMongo, longVal(log.get("mongoTimeTaken")));
+                    maxEs = Math.max(maxEs, longVal(log.get("esTimeTaken")));
+                    maxDb = Math.max(maxDb, longVal(log.get("dbTimeTaken")));
+                }
                 case "calltracking" -> {
                     calltrackingCount++;
                     maxDb = Math.max(maxDb, longVal(log.get("dbTimeTaken")));
                     maxEs = Math.max(maxEs, longVal(log.get("esTimeTaken")));
                     maxMongo = Math.max(maxMongo, longVal(log.get("mongoTimeTaken")));
+                    maxCh = Math.max(maxCh, longVal(log.get("chTimeTaken")));
+                    maxTotalDb = Math.max(maxTotalDb, longVal(log.get("totalDbTimeMs")));
+                    maxApiTotal = Math.max(maxApiTotal, longVal(log.get("apiTotalMs")));
                 }
                 case "perfstats" -> {
                     perfstatsCount++;
@@ -215,14 +275,35 @@ public class FindingsBuilder {
             }
         }
         map.put("ingressCount", ingressCount);
+        map.put("accessCount", accessCount);
         map.put("calltrackingCount", calltrackingCount);
         map.put("perfstatsCount", perfstatsCount);
         map.put("maxUpstreamMs", maxUpstream);
         map.put("maxDbTimeMs", maxDb);
+        map.put("maxChTimeMs", maxCh);
         map.put("maxEsTimeMs", maxEs);
         map.put("maxMongoTimeMs", maxMongo);
+        map.put("maxTotalDbTimeMs", maxTotalDb);
+        map.put("maxApiTotalMs", maxApiTotal);
         map.put("maxPerfstatsMs", maxPerf);
+        if (!operationName.isBlank()) {
+            map.put("operationName", operationName);
+        }
+        if (!slowestStat.isBlank()) {
+            map.put("maxTimeTakenBy", slowestStat);
+        }
         return map;
+    }
+
+    private static String str(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) {
+            return a;
+        }
+        return b != null ? b : "";
     }
 
     private Map<String, Object> summarizeGrafana(Telemetry telemetry) {

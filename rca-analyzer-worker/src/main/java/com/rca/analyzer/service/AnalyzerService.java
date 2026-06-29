@@ -6,6 +6,8 @@ import com.rca.analyzer.heuristics.RcaHeuristicsService;
 import com.rca.analyzer.repository.RcaJobRepository;
 import com.rca.common.dto.KafkaHarMessage;
 import com.rca.common.enums.JobStatus;
+import com.rca.common.error.ErrorContextMerger;
+import com.rca.common.model.ErrorContext;
 import com.rca.common.model.RcaHeuristicsResult;
 import com.rca.common.model.RcaJob;
 import com.rca.common.model.RcaReport;
@@ -55,9 +57,7 @@ public class AnalyzerService {
                     : Instant.parse(message.getEventTimestamp()).plusSeconds(450);
             Instant eventTime = Instant.parse(message.getEventTimestamp());
 
-            Telemetry telemetry = observabilityService.collect(
-                    message.getCorrelationId(), windowStart, windowEnd,
-                    HarStitchContext.from(message), eventTime);
+            Telemetry telemetry = observabilityService.collectForMessage(message, harErrorFrom(message));
             applyHarTimings(telemetry, message);
 
             RcaHeuristicsResult heuristics = heuristicsService.analyze(telemetry);
@@ -138,6 +138,21 @@ public class AnalyzerService {
         if (message.getHarForensicsFindings() != null && !message.getHarForensicsFindings().isEmpty()) {
             telemetry.setHarForensicsFindings(new ArrayList<>(message.getHarForensicsFindings()));
         }
+    }
+
+    private ErrorContext harErrorFrom(KafkaHarMessage message) {
+        if (message.getHarSupportReference() == null && message.getHarErrorMessage() == null
+                && message.getHarExceptionStackTrace() == null) {
+            return null;
+        }
+        return ErrorContextMerger.enrich(ErrorContext.builder()
+                .supportReference(message.getHarSupportReference())
+                .errorMessage(message.getHarErrorMessage())
+                .exceptionStackTrace(message.getHarExceptionStackTrace())
+                .exceptionType(message.getHarExceptionType())
+                .harUrl(message.getHarErrorUrl())
+                .source("har")
+                .build());
     }
 
     private void applyObservabilityWarnings(RcaReport report, Telemetry telemetry) {

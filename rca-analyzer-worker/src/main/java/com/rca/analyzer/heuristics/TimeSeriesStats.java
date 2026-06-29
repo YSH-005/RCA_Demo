@@ -24,6 +24,7 @@ final class TimeSeriesStats {
                 .median(median(sorted))
                 .p95(percentile(sorted, 0.95))
                 .max(sorted.get(n - 1))
+                .min(sorted.get(0))
                 .last(sorted.get(n - 1))
                 .sum(sum)
                 .sampleCount(n)
@@ -39,6 +40,7 @@ final class TimeSeriesStats {
             case "median" -> summary.getMedian();
             case "p95" -> summary.getP95();
             case "max" -> summary.getMax();
+            case "min" -> summary.getMin();
             case "sum" -> summary.getSum();
             default -> summary.getLast();
         };

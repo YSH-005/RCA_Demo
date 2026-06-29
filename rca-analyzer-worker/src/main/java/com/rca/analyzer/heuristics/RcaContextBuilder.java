@@ -60,6 +60,10 @@ public class RcaContextBuilder {
         packet.put("disambiguation", findings.getDisambiguationNotes());
         packet.put("observabilitySources", findings.getObservabilitySources());
         packet.put("kibanaHighlights", findings.getKibanaHighlights());
+        if (findings.getKibanaHighlights() != null
+                && findings.getKibanaHighlights().get("exceptionAnalysis") instanceof Map<?, ?> analysis) {
+            packet.put("errorAnalysis", analysis);
+        }
         packet.put("graylogHighlights", findings.getGraylogHighlights());
         packet.put("grafanaHighlights", findings.getGrafanaHighlights());
         packet.put("podName", findings.getPodName());

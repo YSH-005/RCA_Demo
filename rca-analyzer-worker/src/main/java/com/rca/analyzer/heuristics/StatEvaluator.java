@@ -18,6 +18,8 @@ final class StatEvaluator {
             case MEDIAN_DEVIATION -> medianDeviationTriggered(value, ctx.samples(), ctx.ratioThreshold());
             case RELATIVE_BASELINE -> relativeBaselineTriggered(value, ctx);
             case PRESENT_IF_BASELINE_LOW -> value > 0 && ctx.baseline() < ctx.threshold();
+            case BELOW_THRESHOLD -> value < ctx.threshold();
+            case BELOW_IF_BASELINE_ABOVE -> value < ctx.threshold() && ctx.baseline() >= ctx.ratioThreshold();
         };
     }
 
@@ -40,6 +42,8 @@ final class StatEvaluator {
             case MEDIAN_DEVIATION -> medianDeviationStrength(value, ctx.samples(), ctx.ratioThreshold());
             case RELATIVE_BASELINE -> relativeBaselineStrength(value, ctx);
             case PRESENT_IF_BASELINE_LOW -> value > 0 && ctx.baseline() < ctx.threshold() ? 1 : 0;
+            case BELOW_THRESHOLD -> value < ctx.threshold() ? 1 : 0;
+            case BELOW_IF_BASELINE_ABOVE -> value < ctx.threshold() && ctx.baseline() >= ctx.ratioThreshold() ? 1 : 0;
         };
         return weight * Math.min(1.0, strength);
     }
@@ -147,6 +151,19 @@ final class StatEvaluator {
 
         static EvalContext presentIfBaselineLow(double baselineMax, double ceiling) {
             return new EvalContext(ceiling, 0, 0, baselineMax, 1, 0, List.of());
+        }
+
+        /** {@code threshold} is the unhealthy ceiling (e.g. 0.5 → values below are down). */
+        static EvalContext belowThreshold(double threshold) {
+            return new EvalContext(threshold, 0, 0, 0, 1, 0, List.of());
+        }
+
+        /**
+         * Trigger when {@code incident < threshold} and {@code baseline >= healthyFloor}.
+         * {@code ratioThreshold} carries the healthy floor for baseline.
+         */
+        static EvalContext belowIfBaselineAbove(double threshold, double baseline, double healthyFloor) {
+            return new EvalContext(threshold, 0, healthyFloor, baseline, 1, 0, List.of());
         }
     }
 }

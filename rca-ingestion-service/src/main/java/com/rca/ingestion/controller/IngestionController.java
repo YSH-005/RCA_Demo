@@ -23,11 +23,14 @@ public class IngestionController {
             @RequestPart("file") MultipartFile file,
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
-            @RequestParam(defaultValue = "0") long slowThresholdMs
+            @RequestParam(defaultValue = "0") long slowThresholdMs,
+            @RequestParam(required = false) String graylogSessionCookie,
+            @RequestParam(required = false) String grafanaSessionCookie
     ) {
         Instant fromInstant = from != null && !from.isBlank() ? Instant.parse(from) : null;
         Instant toInstant = to != null && !to.isBlank() ? Instant.parse(to) : null;
-        JobCreatedResponse response = ingestionService.analyzeHar(file, fromInstant, toInstant, slowThresholdMs);
+        JobCreatedResponse response = ingestionService.analyzeHar(
+                file, fromInstant, toInstant, slowThresholdMs, graylogSessionCookie, grafanaSessionCookie);
         return ResponseEntity.accepted().body(response);
     }
 

@@ -279,7 +279,7 @@ public final class HarParser {
                 request.path("url").asText(""));
     }
 
-    private static boolean isApiLikeEntry(JsonNode entry) {
+    public static boolean isApiLikeEntry(JsonNode entry) {
         JsonNode request = entry.path("request");
         String method = request.path("method").asText("GET").toUpperCase(Locale.ROOT);
         if ("OPTIONS".equals(method)) {
@@ -299,7 +299,8 @@ public final class HarParser {
 
         return path.contains("/graphql")
                 || path.contains("/feed")
-                || path.contains("/api/");
+                || path.contains("/api/")
+                || path.contains("/rest/");
     }
 
     private static ApiIdentity classifyEntry(JsonNode request) {

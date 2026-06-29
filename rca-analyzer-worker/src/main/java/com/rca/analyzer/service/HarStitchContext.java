@@ -2,6 +2,8 @@ package com.rca.analyzer.service;
 
 import com.rca.common.dto.KafkaHarMessage;
 
+import com.rca.common.model.SlowHarEntry;
+
 /**
  * HAR fields needed to synthesize Graylog/Grafana shapes aligned with the slow request.
  */
@@ -28,6 +30,21 @@ public record HarStitchContext(
                 nullToEmpty(message.getSlowestMethod()),
                 nullToEmpty(message.getApiKind()),
                 nullToEmpty(message.getApiName()));
+    }
+
+    public static HarStitchContext from(SlowHarEntry entry) {
+        if (entry == null) {
+            return empty();
+        }
+        return new HarStitchContext(
+                entry.getWaitMs(),
+                entry.getDurationMs(),
+                entry.getReceiveMs(),
+                entry.getSendMs(),
+                nullToEmpty(entry.getUrl()),
+                nullToEmpty(entry.getMethod()),
+                nullToEmpty(entry.getApiKind()),
+                nullToEmpty(entry.getApiName()));
     }
 
     public static HarStitchContext empty() {

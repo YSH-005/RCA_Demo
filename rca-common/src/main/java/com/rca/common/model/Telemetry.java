@@ -1,8 +1,10 @@
 package com.rca.common.model;
 
+import com.rca.common.model.ErrorContext;
 import lombok.Data;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -31,8 +33,10 @@ public class Telemetry {
     private Map<String, Object> podMetrics;
     private List<MetricComparison> metricComparisons = new ArrayList<>();
     private List<SlowHarEntry> slowHarEntries = new ArrayList<>();
+    private Map<String, Double> slowApiAnalysisWeights = new LinkedHashMap<>();
     private String slowHarSelection;
     private int slowHarSelectedCount;
     private List<HarForensicsFinding> harForensicsFindings = new ArrayList<>();
     private List<String> logLines;
+    private ErrorContext errorContext;
 }

@@ -1,5 +1,6 @@
 package com.rca.analyzer.heuristics;
 
+import com.rca.analyzer.client.GrafanaIngressContext;
 import com.rca.common.enums.BottleneckCategory;
 import com.rca.common.model.RcaHeuristicsResult;
 import com.rca.common.model.Telemetry;
@@ -70,7 +71,7 @@ final class DisambiguationEngine {
         }
         double max = 0;
         for (Map<String, Object> log : telemetry.getGraylogLogs()) {
-            if (!"ingress".equals(log.get("logKind"))) {
+            if (!GrafanaIngressContext.isIngressLog(String.valueOf(log.getOrDefault("logKind", "")))) {
                 continue;
             }
             long request = longVal(log.get("requestTimeMs"));
