@@ -1,8 +1,10 @@
 package com.rca.query.controller;
 
+import com.rca.common.dto.JobListResponse;
 import com.rca.common.model.RcaJob;
 import com.rca.common.model.RcaReport;
 import com.rca.query.repository.RcaJobRepository;
+import com.rca.query.service.JobQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +17,14 @@ import org.springframework.web.bind.annotation.*;
 public class QueryController {
 
     private final RcaJobRepository jobRepository;
+    private final JobQueryService jobQueryService;
+
+    @GetMapping("/jobs")
+    public ResponseEntity<JobListResponse> listJobs(
+            @RequestParam(name = "limit", defaultValue = "50") int limit) {
+        log.debug("Listing recent jobs limit={}", limit);
+        return ResponseEntity.ok(jobQueryService.listRecent(limit));
+    }
 
     @GetMapping("/jobs/{jobId}")
     public ResponseEntity<RcaJob> getJob(@PathVariable String jobId) {

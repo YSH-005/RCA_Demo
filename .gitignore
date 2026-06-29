@@ -1,42 +1,51 @@
-# Maven Wrapper
-!.mvn/wrapper/maven-wrapper.jar
-
-# Maven / Java
-target/
-!**/src/main/**/target/
-!**/src/test/**/target/
-
-# Build artifacts
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-# Logs
-*.log
-
-# Environment files
+# ── Environment (secrets / local config) ─────────────────────────────────────
 .env
+.env.*
+!.env.example
+application-local.yml
+application-local.properties
 
-# Archives
+# ── Runtime logs & process files ─────────────────────────────────────────────
+logs/
+*.log
+*.pid
+
+# ── Local dev scripts (not part of the Maven modules) ──────────────────────────
+scripts/
+
+# ── Local docs & test data ─────────────────────────────────────────────────────
+docs/
+/test/
+# Maven unit tests (local-only; use ** so nested module paths match)
+**/src/test/**
+
+# ── Maven / Java build ─────────────────────────────────────────────────────────
+target/
+build/
+*.class
+
+# JARs/WARs except Maven wrapper
+*.jar
+*.war
+*.ear
+!**/maven-wrapper.jar
+
+# ── Local caches & large binaries ──────────────────────────────────────────────
+.rca-cache/
 *.tar.gz
 *.zip
-
-# Specific large binaries
 apache-maven-3.9.6-bin.tar.gz
 openjdk-21.0.4_macos-x64_bin.tar.gz
 
-# Kotlin
-.kotlin
+# ── Kotlin ─────────────────────────────────────────────────────────────────────
+.kotlin/
 
-# IntelliJ IDEA
+# ── IDE ────────────────────────────────────────────────────────────────────────
 .idea/
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
 *.iws
 *.iml
 *.ipr
+.vscode/
 
 # Eclipse
 .apt_generated
@@ -54,39 +63,19 @@ openjdk-21.0.4_macos-x64_bin.tar.gz
 /nbdist/
 /.nb-gradle/
 
-# VS Code
-.vscode/
-
-# Mac OS
+# ── OS ─────────────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
 
-# Java compiled files
-*.class
-
-# Package files
-*.jar
-*.war
-*.ear
-
-# Temporary files
+# ── Editor temp files ──────────────────────────────────────────────────────────
 *.tmp
 *.swp
 *.swo
+*~
 
-# Node modules (if frontend exists)
+# ── Frontend (if added later) ──────────────────────────────────────────────────
 node_modules/
-
-# Coverage reports
 coverage/
 
-# Generated dependency directories
-.rca-cache/
-
-# Ignore generated target folders inside services
-rca-query-service/target/
-
-# Optional: ignore local config overrides
-application-local.yml
-application-local.properties
-
-scripts/*.sh
+# ── Local HAR captures (upload via API/CLI instead) ────────────────────────────
+*.har

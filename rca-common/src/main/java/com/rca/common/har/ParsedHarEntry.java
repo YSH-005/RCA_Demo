@@ -17,6 +17,8 @@ public class ParsedHarEntry {
     private String apiName;
     private boolean priority;
     private HarApiTier tier;
+    /** Large payload with download-dominated timing (forensics hint, not a tier). */
+    private boolean downloadDominated;
     private long durationMs;
     private int responseStatus;
     private Instant eventTime;

@@ -34,4 +34,14 @@ public class KafkaHarMessage {
     private int slowEntryAboveThreshold;
     /** Session-level HAR forensics (polling, CDN, compression, etc.). */
     private List<HarForensicsFinding> harForensicsFindings = new ArrayList<>();
+    /** Error signals extracted from HAR response bodies (support ref, stack trace). */
+    private String harSupportReference;
+    private String harErrorMessage;
+    private String harExceptionStackTrace;
+    private String harExceptionType;
+    private String harErrorUrl;
+    /** Optional per-upload Graylog SSO cookie (overrides GRAYLOG_SESSION_COOKIE from .env). */
+    private String graylogSessionCookie;
+    /** Optional per-upload Grafana SSO cookie (overrides GRAFANA_SESSION_COOKIE from .env). */
+    private String grafanaSessionCookie;
 }

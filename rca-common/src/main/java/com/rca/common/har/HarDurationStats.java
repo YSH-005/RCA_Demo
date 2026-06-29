@@ -13,14 +13,16 @@ public final class HarDurationStats {
     private final long medianMs;
     private final long q1Ms;
     private final long q3Ms;
+    private final long p95Ms;
     private final long iqrMs;
     private final long outlierThresholdMs;
 
-    public HarDurationStats(int count, long medianMs, long q1Ms, long q3Ms, long iqrMs, long outlierThresholdMs) {
+    public HarDurationStats(int count, long medianMs, long q1Ms, long q3Ms, long p95Ms, long iqrMs, long outlierThresholdMs) {
         this.count = count;
         this.medianMs = medianMs;
         this.q1Ms = q1Ms;
         this.q3Ms = q3Ms;
+        this.p95Ms = p95Ms;
         this.iqrMs = iqrMs;
         this.outlierThresholdMs = outlierThresholdMs;
     }
@@ -41,6 +43,20 @@ public final class HarDurationStats {
         return q3Ms;
     }
 
+    /** Session p75 — same value as {@link #getQ3Ms()}. */
+    public long getP75Ms() {
+        return q3Ms;
+    }
+
+    /** Session p50 — same value as {@link #getMedianMs()}. */
+    public long getP50Ms() {
+        return medianMs;
+    }
+
+    public long getP95Ms() {
+        return p95Ms;
+    }
+
     public long getIqrMs() {
         return iqrMs;
     }
@@ -51,7 +67,7 @@ public final class HarDurationStats {
 
     public static HarDurationStats fromDurations(List<Long> durationsMs, long floorMs) {
         if (durationsMs == null || durationsMs.isEmpty()) {
-            return new HarDurationStats(0, 0, 0, 0, 0, floorMs);
+            return new HarDurationStats(0, 0, 0, 0, 0, 0, floorMs);
         }
         List<Long> sorted = new ArrayList<>(durationsMs);
         Collections.sort(sorted);
@@ -59,6 +75,7 @@ public final class HarDurationStats {
         long q1 = percentile(sorted, 25);
         long median = percentile(sorted, 50);
         long q3 = percentile(sorted, 75);
+        long p95 = percentile(sorted, 95);
         long iqr = Math.max(0, q3 - q1);
 
         long tukeyFence = q3 + Math.round(iqr * HarSelectionPolicy.IQR_MULTIPLIER);
@@ -71,10 +88,10 @@ public final class HarDurationStats {
             outlierThreshold = Math.max(floorMs, tukeyFence);
         }
 
-        return new HarDurationStats(sorted.size(), median, q1, q3, iqr, outlierThreshold);
+        return new HarDurationStats(sorted.size(), median, q1, q3, p95, iqr, outlierThreshold);
     }
 
-    private static long percentile(List<Long> sorted, int p) {
+    static long percentile(List<Long> sorted, int p) {
         if (sorted.isEmpty()) {
             return 0;
         }

@@ -5,11 +5,14 @@ import com.rca.common.dto.KafkaHarMessage;
 import com.rca.common.enums.JobStatus;
 import com.rca.common.har.HarForensicsAnalyzer;
 import com.rca.common.har.HarForensicsResult;
+import com.rca.common.har.HarErrorExtractor;
 import com.rca.common.har.HarParser;
 import com.rca.common.har.HarSelectionResult;
 import com.rca.common.har.ParsedHarEntry;
+import com.rca.common.model.ErrorContext;
 import com.rca.common.model.RcaJob;
 import com.rca.common.model.SlowHarEntry;
+import com.rca.common.observability.SessionCookieNormalizer;
 import com.rca.ingestion.repository.RcaJobRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +22,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -28,7 +32,9 @@ public class IngestionService {
     private final RcaJobRepository jobRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
-    public JobCreatedResponse analyzeHar(MultipartFile file, Instant from, Instant to, long slowThresholdMs) {
+    public JobCreatedResponse analyzeHar(
+            MultipartFile file, Instant from, Instant to, long slowThresholdMs,
+            String graylogSessionCookie, String grafanaSessionCookie) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("HAR file is required");
         }
@@ -41,6 +47,7 @@ public class IngestionService {
         }
         HarSelectionResult selection = HarParser.selectSlow(harBytes, from, to, slowThresholdMs);
         HarForensicsResult forensics = HarForensicsAnalyzer.analyze(harBytes, selection);
+        ErrorContext harError = HarErrorExtractor.extract(harBytes);
         ParsedHarEntry parsed = selection.getPrimary();
 
         RcaJob job = new RcaJob();
@@ -48,17 +55,22 @@ public class IngestionService {
         job.setCreatedAt(Instant.now().toString());
         job = jobRepository.save(job);
 
-        KafkaHarMessage message = toKafkaMessage(job.getId(), parsed, selection, forensics);
+        KafkaHarMessage message = toKafkaMessage(job.getId(), parsed, selection, forensics, harError);
+        message.setGraylogSessionCookie(SessionCookieNormalizer.graylog(graylogSessionCookie));
+        message.setGrafanaSessionCookie(SessionCookieNormalizer.grafana(grafanaSessionCookie));
         kafkaTemplate.send("har-ingestion", job.getId(), message);
 
-        log.info("HAR job created: {} requestId={} api={}/{} slowApis={} url={}",
+        log.info("HAR job created: {} requestId={} api={}/{} slowApis={} cookieOverrides graylog={} grafana={} url={}",
                 job.getId(), parsed.getRequestId(), parsed.getApiKind(), parsed.getApiName(),
-                selection.getSlowEntries().size(), parsed.getUrl());
+                selection.getSlowEntries().size(),
+                cookieLen(message.getGraylogSessionCookie()),
+                cookieLen(message.getGrafanaSessionCookie()),
+                parsed.getUrl());
         return new JobCreatedResponse(job.getId(), "PENDING", job.getCreatedAt(), "RCA analysis queued");
     }
 
     private KafkaHarMessage toKafkaMessage(String jobId, ParsedHarEntry parsed, HarSelectionResult selection,
-                                           HarForensicsResult forensics) {
+                                           HarForensicsResult forensics, ErrorContext harError) {
         KafkaHarMessage msg = new KafkaHarMessage();
         msg.setJobId(jobId);
         msg.setCorrelationId(parsed.getRequestId());
@@ -89,17 +101,26 @@ public class IngestionService {
         if (forensics.getFindings() != null) {
             msg.setHarForensicsFindings(new ArrayList<>(forensics.getFindings()));
         }
+        if (harError != null && !"none".equals(harError.getSource())) {
+            msg.setHarSupportReference(harError.getSupportReference());
+            msg.setHarErrorMessage(harError.getErrorMessage());
+            msg.setHarExceptionStackTrace(harError.getExceptionStackTrace());
+            msg.setHarExceptionType(harError.getExceptionType());
+            msg.setHarErrorUrl(harError.getHarUrl());
+        }
         return msg;
     }
 
     private SlowHarEntry toSlowHarEntry(ParsedHarEntry entry) {
         return SlowHarEntry.builder()
+                .requestId(entry.getRequestId())
                 .url(entry.getUrl())
                 .method(entry.getMethod())
                 .apiKind(entry.getApiKind())
                 .apiName(entry.getApiName())
                 .priority(entry.isPriority())
                 .tier(entry.getTier())
+                .downloadDominated(entry.isDownloadDominated())
                 .durationMs(entry.getDurationMs())
                 .waitMs(entry.getWaitMs())
                 .blockedMs(entry.getBlockedMs())
@@ -113,6 +134,13 @@ public class IngestionService {
                 .contentEncoding(entry.getContentEncoding())
                 .cacheHeader(entry.getCacheHeader())
                 .fromCache(entry.isFromCache())
+                .eventTimestamp(entry.getEventTime() != null ? entry.getEventTime().toString() : null)
+                .queryWindowFrom(entry.getWindowFrom() != null ? entry.getWindowFrom().toString() : null)
+                .queryWindowTo(entry.getWindowTo() != null ? entry.getWindowTo().toString() : null)
                 .build();
+    }
+
+    private static int cookieLen(String cookie) {
+        return cookie == null || cookie.isBlank() ? 0 : cookie.length();
     }
 }

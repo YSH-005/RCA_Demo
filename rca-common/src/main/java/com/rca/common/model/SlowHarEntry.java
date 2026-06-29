@@ -11,12 +11,19 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SlowHarEntry {
+    private String requestId;
     private String url;
     private String method;
     private String apiKind;
     private String apiName;
     private boolean priority;
     private HarApiTier tier;
+    private boolean downloadDominated;
+    /** Wait-time share of selected slow APIs (0–1), set during analysis. */
+    private double analysisWeight;
+    private String eventTimestamp;
+    private String queryWindowFrom;
+    private String queryWindowTo;
     private long durationMs;
     private long waitMs;
     private long blockedMs;

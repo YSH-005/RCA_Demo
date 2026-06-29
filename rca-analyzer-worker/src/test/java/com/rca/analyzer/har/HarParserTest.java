@@ -33,13 +33,14 @@ class HarParserTest {
 
         assertEquals(2, result.getSlowEntries().size());
         assertTrue(result.getSlowEntries().stream().anyMatch(e -> "universalCases".equals(e.getApiName())));
+        assertTrue(result.getSlowEntries().stream().anyMatch(e -> "caseStreamFeed".equals(e.getApiName())));
         assertEquals("universalCases", result.getPrimary().getApiName());
-        assertEquals(HarApiTier.CRITICAL, result.getPrimary().getTier());
-        assertTrue(result.getSelectionSummary().contains("IQR"));
+        assertEquals(HarApiTier.HIGHLY_CRITICAL, result.getPrimary().getTier());
+        assertTrue(result.getSelectionSummary().contains("p50="));
     }
 
     @Test
-    void selectSlow_usesIqrToIgnoreFastNoise() {
+    void selectSlow_includesApisAtOrAboveSessionP50() {
         String har = """
                 {
                   "log": {
@@ -56,9 +57,10 @@ class HarParserTest {
         HarSelectionResult result = HarParser.selectSlow(
                 har.getBytes(StandardCharsets.UTF_8), null, null, 0);
 
-        assertEquals(1, result.getSlowEntries().size());
+        assertTrue(result.getSlowEntries().size() >= 2);
         assertEquals("universalCases", result.getPrimary().getApiName());
-        assertTrue(result.getIqrThresholdMs() >= HarSelectionPolicy.DEFAULT_MIN_SLOW_MS);
+        assertEquals(HarApiTier.HIGHLY_CRITICAL, result.getPrimary().getTier());
+        assertTrue(result.getSelectionSummary().contains("p50="));
     }
 
     @Test
@@ -67,7 +69,10 @@ class HarParserTest {
                 List.of(50L, 80L, 95L, 120L, 5000L), 200L);
 
         assertEquals(95L, stats.getMedianMs());
+        assertEquals(95L, stats.getP50Ms());
+        assertTrue(stats.getP95Ms() >= stats.getP75Ms());
         assertTrue(stats.getOutlierThresholdMs() >= 200L);
-        assertTrue(stats.getOutlierThresholdMs() <= 5000L);
+        assertTrue(stats.getP50Ms() <= stats.getP75Ms());
+        assertTrue(stats.getP75Ms() <= stats.getP95Ms());
     }
 }

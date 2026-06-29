@@ -1,13 +1,16 @@
 package com.rca.common.har;
 
 /**
- * How an API ranks for slowness RCA within a HAR session.
+ * Session percentile band for API slowness within a HAR capture.
+ * Thresholds come from {@link HarDurationStats} (p50 / p75 / p95 on duration).
  */
 public enum HarApiTier {
-    /** Priority Sprinklr endpoint + session outlier (or top latency). */
+    /** Duration at or above session p95 — highest priority for log/metric correlation. */
+    HIGHLY_CRITICAL,
+    /** Duration at or above session p75 (below p95). */
     CRITICAL,
-    /** Statistical outlier or clearly above session IQR fence. */
+    /** Duration at or above session p50 (below p75) — included in slow set up to cap. */
     HIGH,
-    /** Large required payload; download leg dominates (informational for slowness split). */
-    SIDE_LARGE
+    /** Below session p50 — baseline; excluded from slow-entry log analysis. */
+    NORMAL
 }

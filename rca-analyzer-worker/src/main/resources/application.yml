@@ -28,12 +28,13 @@ server:
   port: 8082
 
 observability:
+  use-synthetic: ${USE_SYNTHETIC:false}
   graylog:
     url: ${GRAYLOG_URL:}
     token: ${GRAYLOG_TOKEN:}
+    session-cookie: ${GRAYLOG_SESSION_COOKIE:}
     stub: ${GRAYLOG_STUB:true}
     max-results: 50
-    stream-filter: "streams:calltrackingbydb OR streams:perfstats"
   kibana:
     url: ${KIBANA_URL:}
     api-key: ${KIBANA_API_KEY:}
@@ -43,13 +44,141 @@ observability:
   grafana:
     url: ${GRAFANA_URL:}
     api-key: ${GRAFANA_API_KEY:}
+    session-cookie: ${GRAFANA_SESSION_COOKIE:}
     stub: ${GRAFANA_STUB:true}
-    datasource-type: influxdb
+    datasource-type: prometheus
     datasource-uid: ${GRAFANA_DATASOURCE_UID:}
-    flux-query-template: |
-      from(bucket: "metrics")
-        |> range(start: {from}, stop: {to})
-        |> filter(fn: (r) => r["pod"] == "{podName}")
+    datasources:
+      k8s: ${GRAFANA_DS_UID_K8S:${GRAFANA_DATASOURCE_UID:}}
+      elasticsearch: ${GRAFANA_DS_UID_ES:}
+      mongo: ${GRAFANA_DS_UID_MONGO:}
+      ingress: ${GRAFANA_DS_UID_INGRESS:${GRAFANA_DATASOURCE_UID:}}
+      ingress-selenium: ${GRAFANA_DS_UID_INGRESS_SELENIUM:}
+    org-id: ${GRAFANA_ORG_ID:1}
+    query-path: ${GRAFANA_QUERY_PATH:/api/ds/query?ds_type=prometheus}
+    influx-query-path: ${GRAFANA_INFLUX_QUERY_PATH:/api/ds/query?ds_type=influxdb}
+    interval-ms: 15000
+    max-data-points: 336
+    k8s-namespace: ${GRAFANA_K8S_NAMESPACE:spr-apps}
+    ingress-namespace: ${GRAFANA_INGRESS_NAMESPACE:ingress-nginx-external}
+    ingress-controller-class: ${GRAFANA_INGRESS_CONTROLLER_CLASS:k8s.io/nginx-external}
+    ingress-datasource-by-namespace:
+      ingress-nginx-webui: ingress
+      ingress-nginx-external: ingress
+      ingress-nginx-internal: ingress-selenium
+    ingress-datasource-by-node-pattern:
+      selenium-gke: ingress-selenium
+      apps-gke: ingress
+    prometheus-metrics:
+      container_cpu_usage_rate:
+        datasource: k8s
+        expr: 'sum(rate(container_cpu_usage_seconds_total{container!="linkerd-proxy",image!="",pod=~"^{podName}"}[5m])) by (pod)'
+      container_memory_usage_rate:
+        datasource: k8s
+        expr: 'sum(container_memory_working_set_bytes{container!="linkerd-proxy",image!="",pod=~"^{podName}"}) / sum(kube_pod_container_resource_limits{resource="memory",pod=~"^{podName}",job!="discovery",release="prometheus"})'
+      jvm_threads_current:
+        datasource: k8s
+        expr: 'jvm_threads_current{kubernetes_pod_name=~"^{podName}"}'
+      thread_queue:
+        datasource: k8s
+        expr: 'jvm_threads_current{kubernetes_pod_name=~"^{podName}"}'
+      gc_old_gen_ms:
+        datasource: k8s
+        expr: '(rate(jvm_gc_collection_seconds_sum{gc="G1 Old Generation",kubernetes_pod_name=~"^{podName}"}[5m]) / rate(jvm_gc_collection_seconds_count{gc="G1 Old Generation",kubernetes_pod_name=~"^{podName}"}[5m])) or increase(jvm_gc_collection_seconds_sum{gc="ZGC Major Cycles",kubernetes_pod_name=~"^{podName}"}[5m])'
+      container_cpu_throttle_pct:
+        datasource: k8s
+        expr: 'sum(increase(container_cpu_cfs_throttled_periods_total{image!="",pod=~"^{podName}"}[5m])) / sum(increase(container_cpu_cfs_periods_total{image!="",pod=~"^{podName}"}[5m])) * 100'
+      pod_restarts_total:
+        datasource: k8s
+        expr: 'sum(increase(kube_pod_container_status_restarts_total{namespace=~"{namespace}",pod=~"^{podName}"}[15m]))'
+      probe_liveness_failed:
+        datasource: k8s
+        expr: 'sum(increase(prober_probe_total{probe_type="Liveness",result="failed",pod=~"^{podName}"}[5m]))'
+      probe_readiness_failed:
+        datasource: k8s
+        expr: 'sum(increase(prober_probe_total{probe_type="Readiness",result="failed",pod=~"^{podName}"}[5m]))'
+      pod_terminated_reason:
+        datasource: k8s
+        expr: 'sum(kube_pod_container_status_last_terminated_reason{namespace=~"{namespace}",pod=~"^{podName}"})'
+      pod_age_seconds:
+        datasource: k8s
+        expr: 'time() - kube_pod_start_time{pod=~"^{podName}"}'
+      ingress_5xx_per_min:
+        datasource: ingress
+        expr: 'sum(increase(nginx_ingress_controller_requests{controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}",status=~"5.*"}[2m]))'
+      ingress_4xx_per_min:
+        datasource: ingress
+        expr: 'sum(increase(nginx_ingress_controller_requests{controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}",status=~"4.*"}[2m]))'
+      ingress_p95_latency_seconds:
+        datasource: ingress
+        expr: 'histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress!="",controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}"}[5m])) by (le))'
+      ingress_p99_latency_seconds:
+        datasource: ingress
+        expr: 'histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress!="",controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}"}[5m])) by (le))'
+      ingress_success_rate:
+        datasource: ingress
+        expr: 'sum(rate(nginx_ingress_controller_requests{controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}",status!~"[4-5].*"}[2m])) / sum(rate(nginx_ingress_controller_requests{controller_pod=~"^{controllerPod}",controller_class=~"{controllerClass}",controller_namespace=~"{ingressNamespace}",ingress=~"{ingressName}"}[2m]))'
+    influx-metrics:
+      mongo_scanned_objects:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT value FROM /^.*QueryExecutor_scanned_objects/ WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_scanned:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT value FROM /^.*QueryExecutor_scanned/ WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_connections_current:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT "value" FROM /^.*Connections_current/ WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_down:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT value FROM /^.*MongoDown_mongo_down/ WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_cpu_total:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT "value" FROM "cpu_total" WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_cpu_iowait:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT "value" FROM "avg-cpu_pct_iowait" WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      mongo_load_avg:
+        datasource: mongo
+        host-key: mongo
+        query: 'SELECT "value" FROM "load_avg_one" WHERE "host" =~ /^{mongoHost}/ AND $timeFilter GROUP BY "host"'
+      es_query_latency_ms:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-search_indices_index_query_latency" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_threadpool_search_rejected:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-threadpool_thread_pool_search_rejected" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_threadpool_search_queue:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-threadpool_thread_pool_search_queue" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_threadpool_search_active:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-threadpool_thread_pool_search_active" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_threadpool_write_rejected:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-threadpool_thread_pool_write_rejected" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_breakers_request_tripped:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-breakers_request_tripped" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_breakers_fielddata_tripped:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-breakers_fielddata_tripped" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
+      es_cluster_health_status:
+        datasource: elasticsearch
+        host-key: es
+        query: 'SELECT "value" FROM "es-cluster_health_status" WHERE "host" =~ /^{esHost}/ AND $timeFilter GROUP BY "host"'
 
 gemini:
   api-key: ${GEMINI_API_KEY}

@@ -10,6 +10,7 @@ public class MetricStatSummary {
     private double median;
     private double p95;
     private double max;
+    private double min;
     private double last;
     private double sum;
     private int sampleCount;
