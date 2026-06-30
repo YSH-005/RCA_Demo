@@ -541,7 +541,7 @@ public class ObservabilityService {
         List<String> lines = new ArrayList<>();
         kibanaLogs.forEach(m -> lines.add("[kibana] " + m));
         graylogLogs.forEach(m -> lines.add("[graylog] " + m));
-        if (!podMetrics.isEmpty()) {
+        if (podMetrics != null && !podMetrics.isEmpty()) {
             lines.add("[grafana] " + podMetrics);
         }
         return lines;

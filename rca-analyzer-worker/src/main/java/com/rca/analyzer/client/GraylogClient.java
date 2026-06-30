@@ -11,6 +11,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,6 +25,9 @@ public class GraylogClient {
     private static final String BROWSER_USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
+    private static final DateTimeFormatter GRAYLOG_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
 
     private final ObservabilityProperties properties;
     private final WebClient webClient;
@@ -129,8 +134,8 @@ public class GraylogClient {
                 .uri(uriBuilder -> uriBuilder
                         .path("/api/search/universal/absolute")
                         .queryParam("query", query)
-                        .queryParam("from", from.toString())
-                        .queryParam("to", to.toString())
+                        .queryParam("from", formatGraylogTime(from))
+                        .queryParam("to", formatGraylogTime(to))
                         .queryParam("limit", properties.getGraylog().getMaxResults())
                         .build())
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
@@ -138,6 +143,10 @@ public class GraylogClient {
         return request.retrieve()
                 .bodyToMono(String.class)
                 .block();
+    }
+
+    private static String formatGraylogTime(Instant instant) {
+        return GRAYLOG_TIME.format(instant);
     }
 
     private long parseTotalResults(String body) throws Exception {

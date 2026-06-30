@@ -13,8 +13,6 @@ public final class HarSelectionPolicy {
     public static final int PERCENTILE_P50 = 50;
     public static final int PERCENTILE_P75 = 75;
     public static final int PERCENTILE_P95 = 95;
-    /** Tukey fence multiplier: Q3 + multiplier × IQR (informational / legacy summary). */
-    public static final double IQR_MULTIPLIER = 1.5;
     /** Payload size (bytes) for side-large tier and forensics. */
     public static final long LARGE_PAYLOAD_BYTES = 500_000L;
     /** Receive time must be at least this share of total for side-large. */

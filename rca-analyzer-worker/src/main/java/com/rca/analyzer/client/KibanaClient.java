@@ -189,7 +189,7 @@ public class KibanaClient {
         entry.put("networkTimeMs", toLong(field(fields, source, useFields, "requestContext.additional.REQUEST_RECEIVED_NETWORK_TIME")));
         entry.put("totalExecTimeMs", toLong(field(fields, source, useFields, "attributes.totalExecTime")));
         entry.put("totalWaitTimeMs", toLong(field(fields, source, useFields, "attributes.totalWaitTime")));
-        entry.put("esTimeMs", toLong(field(fields, source, useFields, "attributes.esTotalTimeTakenInMillis")));
+        entry.put("esTimeMs", resolveEsTimeMs(fields, source, useFields));
         entry.put("timedOut", field(fields, source, useFields, "attributes.timedOut"));
         entry.put("success", field(fields, source, useFields, "attributes.success"));
         entry.put("hitsCount", toLong(field(fields, source, useFields, "attributes.hitsCount")));
@@ -225,6 +225,19 @@ public class KibanaClient {
             entry.put("exceptionMessage", field(fields, source, useFields, "message"));
         }
         return entry;
+    }
+
+    /** ES wall time: prefer {@code esTotalTimeTakenInMillis}, else monitoring {@code ttm}. */
+    private Long resolveEsTimeMs(JsonNode fields, JsonNode source, boolean useFields) {
+        Long esTotal = toLong(field(fields, source, useFields, "attributes.esTotalTimeTakenInMillis"));
+        if (esTotal != null && esTotal > 0) {
+            return esTotal;
+        }
+        Long ttm = toLong(field(fields, source, useFields, "attributes.ttm"));
+        if (ttm != null && ttm > 0) {
+            return ttm;
+        }
+        return esTotal != null ? esTotal : ttm;
     }
 
     private String field(JsonNode fields, JsonNode source, boolean useFields, String name) {
