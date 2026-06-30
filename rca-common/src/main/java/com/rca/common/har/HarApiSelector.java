@@ -15,13 +15,13 @@ public final class HarApiSelector {
     private HarApiSelector() {
     }
 
-    public static HarSelectionResult select(List<ParsedHarEntry> apiCandidates, long floorMs) {
+    public static HarSelectionResult select(List<ParsedHarEntry> apiCandidates) {
         if (apiCandidates == null || apiCandidates.isEmpty()) {
             throw new IllegalArgumentException("No API candidates in HAR");
         }
 
         List<Long> allDurations = apiCandidates.stream().map(ParsedHarEntry::getDurationMs).toList();
-        HarDurationStats stats = HarDurationStats.fromDurations(allDurations, floorMs);
+        HarDurationStats stats = HarDurationStats.fromDurations(allDurations);
         long p50 = stats.getP50Ms();
         long p75 = stats.getP75Ms();
         long p95 = stats.getP95Ms();
@@ -85,8 +85,6 @@ public final class HarApiSelector {
                 .slowEntries(selected)
                 .totalApiCandidates(apiCandidates.size())
                 .aboveThresholdCount(aboveP50.size())
-                .sessionMedianMs(stats.getMedianMs())
-                .iqrThresholdMs(stats.getOutlierThresholdMs())
                 .selectionSummary(summary)
                 .build();
     }

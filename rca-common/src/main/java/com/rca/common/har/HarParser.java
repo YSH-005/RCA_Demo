@@ -30,11 +30,11 @@ public final class HarParser {
             ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ico", ".map"
     );
     /** Priority Sprinklr endpoints for RCA. */
-    private static final List<PriorityEndpoint> PRIORITY_ENDPOINTS = List.of(
-            new PriorityEndpoint("gql", "caseStreamFeed"),
-            new PriorityEndpoint("gql", "universalCases"),
-            new PriorityEndpoint("gql", "paginatedAssociatedMessagesForCase"),
-            new PriorityEndpoint("rest", "/feed")
+    private static final List<ApiIdentity> PRIORITY_ENDPOINTS = List.of(
+            new ApiIdentity("gql", "caseStreamFeed"),
+            new ApiIdentity("gql", "universalCases"),
+            new ApiIdentity("gql", "paginatedAssociatedMessagesForCase"),
+            new ApiIdentity("rest", "/feed")
     );
 
     private HarParser() {
@@ -52,7 +52,6 @@ public final class HarParser {
                 throw new IllegalArgumentException("HAR file has no entries");
             }
 
-            long minSlowMs = HarSelectionPolicy.effectiveMinSlowMs(slowThresholdMs);
             List<JsonNode> apiCandidates = StreamSupport.stream(entries.spliterator(), false)
                     .filter(HarParser::isApiLikeEntry)
                     .toList();
@@ -67,7 +66,7 @@ public final class HarParser {
                 parsedCandidates.add(toParsedEntry(fallback, from, to));
             }
 
-            HarSelectionResult result = HarApiSelector.select(parsedCandidates, minSlowMs);
+            HarSelectionResult result = HarApiSelector.select(parsedCandidates);
             alignQueryWindow(result.getSlowEntries(), from, to);
             return result;
         } catch (IllegalArgumentException e) {
@@ -273,10 +272,8 @@ public final class HarParser {
     }
 
     private static boolean matchesPriorityEndpoint(JsonNode request) {
-        return isPriorityApi(
-                classifyEntry(request).kind(),
-                classifyEntry(request).name(),
-                request.path("url").asText(""));
+        ApiIdentity api = classifyEntry(request);
+        return isPriorityApi(api.kind(), api.name(), request.path("url").asText(""));
     }
 
     public static boolean isApiLikeEntry(JsonNode entry) {
@@ -307,10 +304,10 @@ public final class HarParser {
         String url = request.path("url").asText("");
         String path = pathOf(url).toLowerCase(Locale.ROOT);
 
-        for (PriorityEndpoint endpoint : PRIORITY_ENDPOINTS) {
+        for (ApiIdentity endpoint : PRIORITY_ENDPOINTS) {
             if ("gql".equalsIgnoreCase(endpoint.kind())
                     && path.contains("/" + endpoint.name().toLowerCase())) {
-                return new ApiIdentity("gql", endpoint.name());
+                return endpoint;
             }
         }
 
@@ -422,9 +419,6 @@ public final class HarParser {
         }
 
         return "unknown";
-    }
-
-    private record PriorityEndpoint(String kind, String name) {
     }
 
     private record ApiIdentity(String kind, String name) {

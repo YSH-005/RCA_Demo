@@ -4,91 +4,41 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * Session-level API duration distribution for IQR-based outlier detection.
- */
+/** Session-level API duration percentiles for tier assignment. */
 public final class HarDurationStats {
 
-    private final int count;
-    private final long medianMs;
-    private final long q1Ms;
-    private final long q3Ms;
+    private final long p50Ms;
+    private final long p75Ms;
     private final long p95Ms;
-    private final long iqrMs;
-    private final long outlierThresholdMs;
 
-    public HarDurationStats(int count, long medianMs, long q1Ms, long q3Ms, long p95Ms, long iqrMs, long outlierThresholdMs) {
-        this.count = count;
-        this.medianMs = medianMs;
-        this.q1Ms = q1Ms;
-        this.q3Ms = q3Ms;
+    public HarDurationStats(long p50Ms, long p75Ms, long p95Ms) {
+        this.p50Ms = p50Ms;
+        this.p75Ms = p75Ms;
         this.p95Ms = p95Ms;
-        this.iqrMs = iqrMs;
-        this.outlierThresholdMs = outlierThresholdMs;
     }
 
-    public int getCount() {
-        return count;
-    }
-
-    public long getMedianMs() {
-        return medianMs;
-    }
-
-    public long getQ1Ms() {
-        return q1Ms;
-    }
-
-    public long getQ3Ms() {
-        return q3Ms;
-    }
-
-    /** Session p75 — same value as {@link #getQ3Ms()}. */
-    public long getP75Ms() {
-        return q3Ms;
-    }
-
-    /** Session p50 — same value as {@link #getMedianMs()}. */
     public long getP50Ms() {
-        return medianMs;
+        return p50Ms;
+    }
+
+    public long getP75Ms() {
+        return p75Ms;
     }
 
     public long getP95Ms() {
         return p95Ms;
     }
 
-    public long getIqrMs() {
-        return iqrMs;
-    }
-
-    public long getOutlierThresholdMs() {
-        return outlierThresholdMs;
-    }
-
-    public static HarDurationStats fromDurations(List<Long> durationsMs, long floorMs) {
+    public static HarDurationStats fromDurations(List<Long> durationsMs) {
         if (durationsMs == null || durationsMs.isEmpty()) {
-            return new HarDurationStats(0, 0, 0, 0, 0, 0, floorMs);
+            return new HarDurationStats(0, 0, 0);
         }
         List<Long> sorted = new ArrayList<>(durationsMs);
         Collections.sort(sorted);
-
-        long q1 = percentile(sorted, 25);
-        long median = percentile(sorted, 50);
-        long q3 = percentile(sorted, 75);
-        long p95 = percentile(sorted, 95);
-        long iqr = Math.max(0, q3 - q1);
-
-        long tukeyFence = q3 + Math.round(iqr * HarSelectionPolicy.IQR_MULTIPLIER);
-        long outlierThreshold;
-        if (sorted.size() < 4) {
-            outlierThreshold = Math.max(floorMs, Math.max(q3, median * 2));
-        } else if (iqr == 0) {
-            outlierThreshold = Math.max(floorMs, q3);
-        } else {
-            outlierThreshold = Math.max(floorMs, tukeyFence);
-        }
-
-        return new HarDurationStats(sorted.size(), median, q1, q3, p95, iqr, outlierThreshold);
+        return new HarDurationStats(
+                percentile(sorted, HarSelectionPolicy.PERCENTILE_P50),
+                percentile(sorted, HarSelectionPolicy.PERCENTILE_P75),
+                percentile(sorted, HarSelectionPolicy.PERCENTILE_P95));
     }
 
     static long percentile(List<Long> sorted, int p) {
