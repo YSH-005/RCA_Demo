@@ -109,10 +109,21 @@ public final class GrafanaEsContext {
 
     private static void mergeHostTime(Map<String, Long> hostTimes, String host, long timeMs) {
         String influxHost = toInfluxHostname(host);
-        if (influxHost.isBlank() || timeMs <= 0) {
+        if (!isPlausibleEsHost(influxHost) || timeMs <= 0) {
             return;
         }
         hostTimes.merge(influxHost, timeMs, Math::max);
+    }
+
+    /** Rejects bare numbers (e.g. Kibana {@code esHost=10}) and other non-hostname tokens. */
+    static boolean isPlausibleEsHost(String influxHost) {
+        if (influxHost == null || influxHost.isBlank()) {
+            return false;
+        }
+        if (influxHost.matches("\\d+")) {
+            return false;
+        }
+        return influxHost.length() >= 4 || influxHost.contains("-");
     }
 
     static long percentile(List<Long> sortedValues, double p) {

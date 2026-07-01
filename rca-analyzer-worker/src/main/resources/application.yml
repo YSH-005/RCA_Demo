@@ -59,6 +59,7 @@ observability:
     influx-query-path: ${GRAFANA_INFLUX_QUERY_PATH:/api/ds/query?ds_type=influxdb}
     interval-ms: 15000
     max-data-points: 336
+    request-timeout-seconds: ${GRAFANA_REQUEST_TIMEOUT_SECONDS:20}
     k8s-namespace: ${GRAFANA_K8S_NAMESPACE:spr-apps}
     ingress-namespace: ${GRAFANA_INGRESS_NAMESPACE:ingress-nginx-external}
     ingress-controller-class: ${GRAFANA_INGRESS_CONTROLLER_CLASS:k8s.io/nginx-external}

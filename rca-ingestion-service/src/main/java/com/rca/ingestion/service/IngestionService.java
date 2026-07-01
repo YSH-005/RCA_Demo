@@ -3,6 +3,7 @@ package com.rca.ingestion.service;
 import com.rca.common.dto.JobCreatedResponse;
 import com.rca.common.dto.KafkaHarMessage;
 import com.rca.common.enums.JobStatus;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.rca.common.har.HarForensicsAnalyzer;
 import com.rca.common.har.HarForensicsResult;
 import com.rca.common.har.HarErrorExtractor;
@@ -23,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
@@ -45,10 +47,17 @@ public class IngestionService {
         } catch (java.io.IOException e) {
             throw new IllegalArgumentException("Failed to read HAR file", e);
         }
-        HarSelectionResult selection = HarParser.selectSlow(harBytes, from, to, slowThresholdMs);
-        HarForensicsResult forensics = HarForensicsAnalyzer.analyze(harBytes, selection);
-        ErrorContext harError = HarErrorExtractor.extract(harBytes);
+        long parseStartMs = System.currentTimeMillis();
+        JsonNode harRoot = HarParser.readRoot(harBytes);
+        HarSelectionResult selection = HarParser.selectSlow(harRoot, from, to, slowThresholdMs);
+        CompletableFuture<HarForensicsResult> forensicsFuture = CompletableFuture.supplyAsync(
+                () -> HarForensicsAnalyzer.analyze(harRoot, selection));
+        CompletableFuture<ErrorContext> errorFuture = CompletableFuture.supplyAsync(
+                () -> HarErrorExtractor.extract(harRoot));
+        HarForensicsResult forensics = forensicsFuture.join();
+        ErrorContext harError = errorFuture.join();
         ParsedHarEntry parsed = selection.getPrimary();
+        long parseMs = System.currentTimeMillis() - parseStartMs;
 
         RcaJob job = new RcaJob();
         job.setStatus(JobStatus.PENDING);
@@ -60,9 +69,9 @@ public class IngestionService {
         message.setGrafanaSessionCookie(SessionCookieNormalizer.grafana(grafanaSessionCookie));
         kafkaTemplate.send("har-ingestion", job.getId(), message);
 
-        log.info("HAR job created: {} requestId={} api={}/{} slowApis={} cookieOverrides graylog={} grafana={} url={}",
+        log.info("HAR job created: {} requestId={} api={}/{} slowApis={} parseMs={} cookieOverrides graylog={} grafana={} url={}",
                 job.getId(), parsed.getRequestId(), parsed.getApiKind(), parsed.getApiName(),
-                selection.getSlowEntries().size(),
+                selection.getSlowEntries().size(), parseMs,
                 cookieLen(message.getGraylogSessionCookie()),
                 cookieLen(message.getGrafanaSessionCookie()),
                 parsed.getUrl());
