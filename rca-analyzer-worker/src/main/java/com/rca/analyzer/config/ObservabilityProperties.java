@@ -69,6 +69,8 @@ public class ObservabilityProperties {
         private String influxQueryPath = "/api/ds/query?ds_type=influxdb";
         private int intervalMs = 15000;
         private int maxDataPoints = 336;
+        /** HTTP response timeout for Grafana datasource queries (fail fast on gateway 504s). */
+        private int requestTimeoutSeconds = 20;
         /** Default k8s namespace for pod-stats dashboard (Grafana variable {@code $namespace}). */
         private String k8sNamespace = "spr-apps";
         /** Ingress Review — {@code $namespace} on nginx controller metrics. */

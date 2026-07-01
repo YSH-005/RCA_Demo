@@ -42,7 +42,11 @@ public final class HarForensicsAnalyzer {
     }
 
     public static HarForensicsResult analyze(byte[] harBytes, HarSelectionResult selection) {
-        List<HarEntrySnapshot> entries = HarParser.scanEntries(harBytes);
+        return analyze(HarParser.readRoot(harBytes), selection);
+    }
+
+    public static HarForensicsResult analyze(JsonNode root, HarSelectionResult selection) {
+        List<HarEntrySnapshot> entries = HarParser.scanEntries(root);
         List<HarForensicsFinding> findings = new ArrayList<>();
         List<SlowHarEntry> enrichedSlow = enrichSlowEntries(selection.getSlowEntries(), entries);
 

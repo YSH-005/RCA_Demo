@@ -23,7 +23,14 @@ public final class HarErrorExtractor {
 
     public static ErrorContext extract(byte[] harBytes) {
         try {
-            JsonNode root = MAPPER.readTree(harBytes);
+            return extract(MAPPER.readTree(harBytes));
+        } catch (Exception e) {
+            return empty();
+        }
+    }
+
+    public static ErrorContext extract(JsonNode root) {
+        try {
             JsonNode entries = root.path("log").path("entries");
             if (!entries.isArray()) {
                 return empty();

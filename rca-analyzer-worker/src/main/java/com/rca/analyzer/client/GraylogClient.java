@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.net.URI;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -59,23 +60,69 @@ public class GraylogClient {
 
     public GraylogFetchResult fetchLogsResult(
             String requestId, Instant from, Instant to, String sessionCookieOverride) {
+        return fetchLogsResult(requestId, from, to, sessionCookieOverride, "");
+    }
+
+    /**
+     * Per-requestId queries: (1) {@code request_id} field, (2) phrase match for the space id.
+     * Stops at the first query that returns messages.
+     */
+    public GraylogFetchResult fetchLogsResult(
+            String requestId, Instant from, Instant to,
+            String sessionCookieOverride, String urlPathHint) {
         if (!graylogConfigured(sessionCookieOverride)) {
             log.warn("Graylog not configured (set GRAYLOG_URL and GRAYLOG_TOKEN or GRAYLOG_SESSION_COOKIE)");
             return GraylogFetchResult.unauthenticated();
         }
 
         try {
-            String query = requestIdTextQuery(requestId);
-            SearchOutcome outcome = search(requestId, query, from, to, sessionCookieOverride);
-            if (!outcome.authenticated()) {
-                log.error("Graylog session expired or not authenticated for requestId={}", requestId);
-                return GraylogFetchResult.unauthenticated();
+            List<String> queries = buildRequestQueries(requestId);
+            SearchOutcome lastOutcome = new SearchOutcome(List.of(), true, 0);
+            for (int i = 0; i < queries.size(); i++) {
+                String query = queries.get(i);
+                SearchOutcome outcome = search(requestId, query, from, to, sessionCookieOverride);
+                if (!outcome.authenticated()) {
+                    log.error("Graylog session expired or not authenticated for requestId={}", requestId);
+                    return GraylogFetchResult.unauthenticated();
+                }
+                lastOutcome = outcome;
+                if (!outcome.logs().isEmpty()) {
+                    if (i > 0) {
+                        log.info("Graylog matched requestId={} on fallback query #{}: {}", requestId, i + 1, query);
+                    }
+                    log.info("Graylog returned {} messages for requestId={} query={} window={}..{} (total_results={})",
+                            outcome.logs().size(), requestId, query, formatGraylogTime(from), formatGraylogTime(to),
+                            outcome.totalResults());
+                    return new GraylogFetchResult(outcome.logs(), true, outcome.totalResults());
+                }
             }
-            log.info("Graylog returned {} messages for requestId={} query={} (total_results={})",
-                    outcome.logs().size(), requestId, query, outcome.totalResults());
-            return new GraylogFetchResult(outcome.logs(), true, outcome.totalResults());
+            log.info("Graylog returned 0 messages for requestId={} after {} queries window={}..{} (total_results={})",
+                    requestId, queries.size(), formatGraylogTime(from), formatGraylogTime(to),
+                    lastOutcome.totalResults());
+            return new GraylogFetchResult(List.of(), true, lastOutcome.totalResults());
         } catch (Exception e) {
             log.error("Graylog fetch failed for requestId={}: {}", requestId, e.getMessage());
+            return GraylogFetchResult.unauthenticated();
+        }
+    }
+
+    /** Session-level search (e.g. slow API paths in the incident window). */
+    public GraylogFetchResult fetchQueryResult(
+            String query, Instant from, Instant to, String sessionCookieOverride, String label) {
+        if (!graylogConfigured(sessionCookieOverride)) {
+            return GraylogFetchResult.unauthenticated();
+        }
+        try {
+            SearchOutcome outcome = search(label, query, from, to, sessionCookieOverride);
+            if (!outcome.authenticated()) {
+                return GraylogFetchResult.unauthenticated();
+            }
+            log.info("Graylog session search {} returned {} messages query={} window={}..{} (total_results={})",
+                    label, outcome.logs().size(), query, formatGraylogTime(from), formatGraylogTime(to),
+                    outcome.totalResults());
+            return new GraylogFetchResult(outcome.logs(), true, outcome.totalResults());
+        } catch (Exception e) {
+            log.error("Graylog session search {} failed: {}", label, e.getMessage());
             return GraylogFetchResult.unauthenticated();
         }
     }
@@ -201,9 +248,53 @@ public class GraylogClient {
         return properties.getGraylog().getSessionCookie();
     }
 
-    /** Free-text search — matches request_id, Mongo comment dId:, and any other field containing the id. */
-    static String requestIdTextQuery(String requestId) {
-        return "\"" + requestId + "\"";
+    static List<String> buildRequestQueries(String requestId) {
+        List<String> queries = new ArrayList<>();
+        String escaped = escapeLucene(requestId);
+        String quoted = "\"" + escaped + "\"";
+        // 1. Exact field match (calltracking / access logs with request_id populated).
+        queries.add("request_id:" + quoted);
+        // 2. Phrase anywhere — ingress logs carry the id in URL/message, not request_id.
+        queries.add(quoted);
+        return queries;
+    }
+
+    public static String buildSessionPathQuery(List<String> urlPaths) {
+        if (urlPaths == null || urlPaths.isEmpty()) {
+            return "";
+        }
+        List<String> clauses = new ArrayList<>();
+        for (String raw : urlPaths) {
+            String path = pathFromUrl(raw);
+            if (path.isBlank()) {
+                continue;
+            }
+            String escaped = escapeLucene(path);
+            clauses.add("http_uri:*" + escaped + "*");
+            clauses.add("path:*" + escaped + "*");
+        }
+        return String.join(" OR ", clauses);
+    }
+
+    static String pathFromUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        try {
+            return URI.create(url.trim()).getPath();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String escapeLucene(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace(":", "\\:");
     }
 
     private List<Map<String, Object>> parseMessages(String body) throws Exception {

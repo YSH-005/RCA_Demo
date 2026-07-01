@@ -8,10 +8,13 @@ import com.rca.analyzer.config.ObservabilityProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.netty.http.client.HttpClient;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -32,7 +35,13 @@ public class GrafanaClient {
     public GrafanaClient(ObservabilityProperties properties) {
         this.properties = properties;
         String baseUrl = properties.getGrafana().getUrl().replaceAll("/$", "");
-        this.webClient = WebClient.builder().baseUrl(baseUrl).build();
+        int timeoutSeconds = Math.max(5, properties.getGrafana().getRequestTimeoutSeconds());
+        HttpClient httpClient = HttpClient.create()
+                .responseTimeout(Duration.ofSeconds(timeoutSeconds));
+        this.webClient = WebClient.builder()
+                .baseUrl(baseUrl)
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
     }
 
     public Map<String, List<Double>> fetchTimeSeries(String podName, Instant from, Instant to) {
@@ -98,6 +107,10 @@ public class GrafanaClient {
             log.error("Grafana HTTP {} for pod={}: {}", e.getStatusCode().value(), context.podName(), e.getMessage());
             return new GrafanaFetchResult(Map.of(), true);
         } catch (Exception e) {
+            if (isTimeout(e)) {
+                log.warn("Grafana request timed out for pod={}: {}", context.podName(), e.getMessage());
+                return new GrafanaFetchResult(Map.of(), true);
+            }
             log.error("Grafana fetch failed for pod={}: {}", context.podName(), e.getMessage());
             return GrafanaFetchResult.unauthenticated();
         }
@@ -106,6 +119,17 @@ public class GrafanaClient {
     private static boolean isAuthFailure(WebClientResponseException e) {
         int status = e.getStatusCode().value();
         return status == 401 || status == 403;
+    }
+
+    private static boolean isTimeout(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String name = t.getClass().getSimpleName();
+            if (name.contains("Timeout") || name.contains("TimeoutException")) {
+                return true;
+            }
+        }
+        String msg = e.getMessage();
+        return msg != null && msg.toLowerCase().contains("timeout");
     }
 
     /** Legacy single-point metrics map (last value per series). */

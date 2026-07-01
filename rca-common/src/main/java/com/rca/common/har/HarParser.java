@@ -12,6 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
 public final class HarParser {
@@ -44,22 +45,29 @@ public final class HarParser {
         return selectSlow(harBytes, from, to, slowThresholdMs).getPrimary();
     }
 
-    public static HarSelectionResult selectSlow(byte[] harBytes, Instant from, Instant to, long slowThresholdMs) {
+    public static JsonNode readRoot(byte[] harBytes) {
         try {
-            JsonNode root = MAPPER.readTree(harBytes);
+            return MAPPER.readTree(harBytes);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid HAR file: " + e.getMessage(), e);
+        }
+    }
+
+    public static HarSelectionResult selectSlow(byte[] harBytes, Instant from, Instant to, long slowThresholdMs) {
+        return selectSlow(readRoot(harBytes), from, to, slowThresholdMs);
+    }
+
+    public static HarSelectionResult selectSlow(JsonNode root, Instant from, Instant to, long slowThresholdMs) {
+        try {
             JsonNode entries = root.path("log").path("entries");
             if (!entries.isArray() || entries.isEmpty()) {
                 throw new IllegalArgumentException("HAR file has no entries");
             }
 
-            List<JsonNode> apiCandidates = StreamSupport.stream(entries.spliterator(), false)
+            List<ParsedHarEntry> parsedCandidates = StreamSupport.stream(entries.spliterator(), false)
                     .filter(HarParser::isApiLikeEntry)
-                    .toList();
-
-            List<ParsedHarEntry> parsedCandidates = new ArrayList<>();
-            for (JsonNode entry : apiCandidates) {
-                parsedCandidates.add(toParsedEntry(entry, from, to));
-            }
+                    .map(entry -> toParsedEntry(entry, from, to))
+                    .collect(Collectors.toCollection(ArrayList::new));
 
             if (parsedCandidates.isEmpty()) {
                 JsonNode fallback = findSlowestEntry(entries, slowThresholdMs);
@@ -147,20 +155,19 @@ public final class HarParser {
     }
 
     public static List<HarEntrySnapshot> scanEntries(byte[] harBytes) {
-        try {
-            JsonNode root = MAPPER.readTree(harBytes);
-            JsonNode entries = root.path("log").path("entries");
-            if (!entries.isArray()) {
-                return List.of();
-            }
-            List<HarEntrySnapshot> snapshots = new ArrayList<>();
-            for (JsonNode entry : entries) {
-                snapshots.add(toSnapshot(entry));
-            }
-            return snapshots;
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid HAR file: " + e.getMessage(), e);
+        return scanEntries(readRoot(harBytes));
+    }
+
+    public static List<HarEntrySnapshot> scanEntries(JsonNode root) {
+        JsonNode entries = root.path("log").path("entries");
+        if (!entries.isArray()) {
+            return List.of();
         }
+        List<HarEntrySnapshot> snapshots = new ArrayList<>();
+        for (JsonNode entry : entries) {
+            snapshots.add(toSnapshot(entry));
+        }
+        return snapshots;
     }
 
     private static HarEntrySnapshot toSnapshot(JsonNode entry) {

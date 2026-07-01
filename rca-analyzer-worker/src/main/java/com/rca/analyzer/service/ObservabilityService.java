@@ -32,11 +32,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ObservabilityService {
+
+    private static final ExecutorService GRAFANA_FETCH_EXECUTOR = Executors.newFixedThreadPool(8);
+    private static final ExecutorService OBSERVABILITY_FETCH_EXECUTOR = Executors.newFixedThreadPool(8);
 
     private final ObservabilityProperties properties;
     private final HeuristicsProperties heuristicsProperties;
@@ -125,49 +132,41 @@ public class ObservabilityService {
         List<Map<String, Object>> allGraylog = new ArrayList<>();
         List<MetricComparison> allComparisons = new ArrayList<>();
         Map<String, Object> mergedMetrics = new LinkedHashMap<>();
+        // Group slow APIs by the pod they resolve to so Grafana is queried once per pod.
+        Map<String, PodAggregate> podAggregates = new LinkedHashMap<>();
+        AtomicBoolean graylogExhausted = new AtomicBoolean(false);
+
+        List<Phase1Request> phase1Requests = buildPhase1Requests(
+                slowEntries, message.getCorrelationId(), weights, defaultFrom, defaultTo, defaultEvent);
+        long phase1StartMs = System.currentTimeMillis();
+        List<CompletableFuture<Phase1Result>> phase1Futures = phase1Requests.stream()
+                .map(req -> CompletableFuture.supplyAsync(
+                        () -> fetchPhase1Observability(req, harError, sessionCookies, graylogExhausted),
+                        OBSERVABILITY_FETCH_EXECUTOR))
+                .toList();
+        CompletableFuture.allOf(phase1Futures.toArray(CompletableFuture[]::new)).join();
+        long phase1Ms = System.currentTimeMillis() - phase1StartMs;
+
         Set<String> fetchedRequestIds = new HashSet<>();
+        for (CompletableFuture<Phase1Result> future : phase1Futures) {
+            Phase1Result result = future.join();
+            fetchedRequestIds.add(result.requestId());
+            tagObservabilityLogs(result.kibanaLogs(), result.entry(), result.requestId(), result.weight());
+            result.kibanaLogs().forEach(log -> mergeKibanaLog(allKibana, log));
+            tagObservabilityLogs(result.graylogLogs(), result.entry(), result.requestId(), result.weight());
+            mergeGraylogLogs(allGraylog, result.graylogLogs());
 
-        for (SlowHarEntry entry : slowEntries) {
-            String requestId = effectiveRequestId(entry, message.getCorrelationId());
-            double weight = entry.getAnalysisWeight() > 0
-                    ? entry.getAnalysisWeight()
-                    : weights.getOrDefault(HarWaitAnalysisWeights.apiKey(entry), 0.0);
+            String podName = resolvePodName(result.graylogLogs(), result.kibanaLogs());
+            podAggregates.computeIfAbsent(podName, PodAggregate::new)
+                    .add(result.requestId(), result.weight(), result.from(), result.to(), result.eventTime(),
+                            result.kibanaLogs(), result.graylogLogs());
 
-            if (requestId.isBlank()) {
-                log.debug("Skipping observability fetch for slow API {} — no requestId",
-                        slowApiLabel(entry));
-                continue;
-            }
-            if (!fetchedRequestIds.add(requestId)) {
-                continue;
-            }
-
-            Instant from = parseInstant(entry.getQueryWindowFrom(), defaultFrom);
-            Instant to = parseInstant(entry.getQueryWindowTo(), defaultTo);
-            Instant eventTime = parseInstant(entry.getEventTimestamp(), defaultEvent);
-            HarStitchContext har = HarStitchContext.from(entry);
-
-            List<Map<String, Object>> kibanaLogs = fetchKibanaLogs(requestId, from, to, harError);
-            tagObservabilityLogs(kibanaLogs, entry, requestId, weight);
-            kibanaLogs.forEach(log -> mergeKibanaLog(allKibana, log));
-
-            List<Map<String, Object>> graylogLogs = fetchGraylogLogs(
-                    requestId, from, to, har, kibanaLogs, sessionCookies);
-            tagObservabilityLogs(graylogLogs, entry, requestId, weight);
-            allGraylog.addAll(graylogLogs);
-
-            String podName = resolvePodName(graylogLogs, kibanaLogs);
-            ErrorContext errorContext = ErrorContextMerger.merge(harError, allKibana);
-            GrafanaBundle grafana = fetchGrafanaBundle(
-                    podName, from, to, eventTime, kibanaLogs, graylogLogs, errorContext, sessionCookies);
-            stampComparisonWeights(grafana.comparisons(), weight, requestId);
-            allComparisons.addAll(grafana.comparisons());
-            mergePodMetrics(mergedMetrics, grafana.podMetrics(), weight);
-
-            log.info("Observability for slow API {} requestId={} weight={} kibana={} graylog={} grafanaMetrics={}",
-                    slowApiLabel(entry), requestId, String.format("%.3f", weight),
-                    kibanaLogs.size(), graylogLogs.size(), grafana.comparisons().size());
+            log.info("Observability logs for slow API {} requestId={} weight={} pod={} kibana={} graylog={}",
+                    slowApiLabel(result.entry()), result.requestId(), String.format("%.3f", result.weight()),
+                    podName, result.kibanaLogs().size(), result.graylogLogs().size());
         }
+        log.info("Phase 1 observability completed requestIds={} phase1Ms={} graylogExhausted={}",
+                fetchedRequestIds.size(), phase1Ms, graylogExhausted.get());
 
         if (fetchedRequestIds.isEmpty()) {
             log.info("No requestIds on slow entries — falling back to primary correlationId={}",
@@ -177,9 +176,38 @@ public class ObservabilityService {
                     HarStitchContext.from(message), defaultEvent, harError, sessionCookies);
         }
 
+        fetchSessionGraylogFallback(message, slowEntries, defaultFrom, defaultTo, sessionCookies, allGraylog,
+                graylogExhausted);
+
+        ErrorContext errorContext = ErrorContextMerger.merge(harError, allKibana);
+
+        // Phase 2: one Grafana fetch per unique pod (in parallel), scored with cumulative weight.
+        List<CompletableFuture<PodGrafanaResult>> podGrafanaFutures = podAggregates.values().stream()
+                .map(pod -> CompletableFuture.supplyAsync(() -> {
+                    GrafanaBundle grafana = fetchGrafanaBundle(
+                            pod.podName, pod.from, pod.to, pod.eventTime,
+                            pod.kibanaLogs, pod.graylogLogs, errorContext, sessionCookies);
+                    return new PodGrafanaResult(pod, grafana);
+                }, GRAFANA_FETCH_EXECUTOR))
+                .toList();
+        CompletableFuture.allOf(podGrafanaFutures.toArray(CompletableFuture[]::new)).join();
+
+        for (CompletableFuture<PodGrafanaResult> future : podGrafanaFutures) {
+            PodGrafanaResult result = future.join();
+            PodAggregate pod = result.pod();
+            GrafanaBundle grafana = result.grafana();
+            stampComparisonWeights(grafana.comparisons(), pod.cumulativeWeight, pod.joinedRequestIds());
+            allComparisons.addAll(grafana.comparisons());
+            mergePodMetrics(mergedMetrics, grafana.podMetrics(), pod.cumulativeWeight);
+
+            log.info("Grafana for pod={} requestIds={} cumulativeWeight={} grafanaMetrics={}",
+                    pod.podName, pod.requestIds, String.format("%.3f", pod.cumulativeWeight),
+                    grafana.comparisons().size());
+        }
+
         telemetry.setKibanaLogs(allKibana);
         telemetry.setGraylogLogs(allGraylog);
-        telemetry.setErrorContext(ErrorContextMerger.merge(harError, allKibana));
+        telemetry.setErrorContext(errorContext);
         telemetry.setPodName(resolvePodName(allGraylog, allKibana));
         telemetry.setMetricComparisons(allComparisons);
         if (!mergedMetrics.isEmpty()) {
@@ -290,6 +318,11 @@ public class ObservabilityService {
             List<Map<String, Object>> kibanaLogs, List<Map<String, Object>> graylogLogs,
             ErrorContext errorContext, SessionCookies sessionCookies) {
 
+        if (podName == null || podName.isBlank() || "unknown-pod".equals(podName)) {
+            log.debug("Skipping Grafana for unresolved pod={}", podName);
+            return new GrafanaBundle(Map.of(), List.of());
+        }
+
         if (useGrafanaStub(sessionCookies)) {
             log.debug("Grafana provider: synthetic for pod={}", podName);
             SyntheticGrafanaProvider.GrafanaResult result =
@@ -323,41 +356,55 @@ public class ObservabilityService {
         }
 
         Map<String, List<Double>> incidentSeries = new LinkedHashMap<>(incidentResult.series());
-        Map<String, List<Double>> baselineSeries = new LinkedHashMap<>(
-                grafanaClient.fetchTimeSeries(baseContext, baselineFrom, baselineTo,
-                        sessionCookies.grafana(), podScope));
+        String grafanaCookie = sessionCookies.grafana();
 
+        CompletableFuture<Map<String, List<Double>>> podBaselineFuture = CompletableFuture.supplyAsync(
+                () -> grafanaClient.fetchTimeSeries(baseContext, baselineFrom, baselineTo,
+                        grafanaCookie, podScope),
+                GRAFANA_FETCH_EXECUTOR);
+
+        List<CompletableFuture<HostMetrics>> esFutures = esHosts.stream()
+                .map(esHost -> CompletableFuture.supplyAsync(
+                        () -> fetchHostMetrics(baseContext.withEsHost(esHost), esHost,
+                                incidentFrom, incidentTo, baselineFrom, baselineTo,
+                                grafanaCookie, GrafanaClient.InfluxScope.ES_ONLY),
+                        GRAFANA_FETCH_EXECUTOR))
+                .toList();
+
+        List<CompletableFuture<HostMetrics>> mongoFutures = mongoHosts.stream()
+                .map(mongoHost -> CompletableFuture.supplyAsync(
+                        () -> fetchHostMetrics(baseContext.withMongoHost(mongoHost), mongoHost,
+                                incidentFrom, incidentTo, baselineFrom, baselineTo,
+                                grafanaCookie, GrafanaClient.InfluxScope.MONGO_ONLY),
+                        GRAFANA_FETCH_EXECUTOR))
+                .toList();
+
+        List<CompletableFuture<?>> allFutures = new ArrayList<>();
+        allFutures.add(podBaselineFuture);
+        allFutures.addAll(esFutures);
+        allFutures.addAll(mongoFutures);
+        CompletableFuture.allOf(allFutures.toArray(CompletableFuture[]::new)).join();
+
+        Map<String, List<Double>> baselineSeries = new LinkedHashMap<>(podBaselineFuture.join());
         List<MetricComparison> comparisons = new ArrayList<>(
                 grafanaMetricEvaluator.evaluate(incidentSeries, baselineSeries, podName));
 
-        for (String esHost : esHosts) {
-            GrafanaQueryContext esContext = baseContext.withEsHost(esHost);
-            Map<String, List<Double>> esIncident = grafanaClient.fetchTimeSeries(
-                    esContext, incidentFrom, incidentTo, sessionCookies.grafana(),
-                    GrafanaClient.InfluxScope.ES_ONLY);
-            Map<String, List<Double>> esBaseline = grafanaClient.fetchTimeSeries(
-                    esContext, baselineFrom, baselineTo, sessionCookies.grafana(),
-                    GrafanaClient.InfluxScope.ES_ONLY);
-            mergeTimeSeries(incidentSeries, esIncident);
-            mergeTimeSeries(baselineSeries, esBaseline);
+        for (CompletableFuture<HostMetrics> future : esFutures) {
+            HostMetrics es = future.join();
+            mergeTimeSeries(incidentSeries, es.incident());
+            mergeTimeSeries(baselineSeries, es.baseline());
             comparisons.addAll(grafanaMetricEvaluator.evaluate(
-                    esIncident, esBaseline, esHost, "es_"));
-            log.info("Grafana ES metrics for host={} incidentSeries={}", esHost, esIncident.size());
+                    es.incident(), es.baseline(), es.host(), "es_"));
+            log.info("Grafana ES metrics for host={} incidentSeries={}", es.host(), es.incident().size());
         }
 
-        for (String mongoHost : mongoHosts) {
-            GrafanaQueryContext mongoContext = baseContext.withMongoHost(mongoHost);
-            Map<String, List<Double>> mongoIncident = grafanaClient.fetchTimeSeries(
-                    mongoContext, incidentFrom, incidentTo, sessionCookies.grafana(),
-                    GrafanaClient.InfluxScope.MONGO_ONLY);
-            Map<String, List<Double>> mongoBaseline = grafanaClient.fetchTimeSeries(
-                    mongoContext, baselineFrom, baselineTo, sessionCookies.grafana(),
-                    GrafanaClient.InfluxScope.MONGO_ONLY);
-            mergeTimeSeries(incidentSeries, mongoIncident);
-            mergeTimeSeries(baselineSeries, mongoBaseline);
+        for (CompletableFuture<HostMetrics> future : mongoFutures) {
+            HostMetrics mongo = future.join();
+            mergeTimeSeries(incidentSeries, mongo.incident());
+            mergeTimeSeries(baselineSeries, mongo.baseline());
             comparisons.addAll(grafanaMetricEvaluator.evaluate(
-                    mongoIncident, mongoBaseline, mongoHost, "mongo_"));
-            log.info("Grafana mongo metrics for host={} incidentSeries={}", mongoHost, mongoIncident.size());
+                    mongo.incident(), mongo.baseline(), mongo.host(), "mongo_"));
+            log.info("Grafana mongo metrics for host={} incidentSeries={}", mongo.host(), mongo.incident().size());
         }
 
         if (incidentSeries.isEmpty()) {
@@ -382,6 +429,25 @@ public class ObservabilityService {
         metrics.put("baselineWindowStart", baselineFrom.toString());
         metrics.put("baselineWindowEnd", baselineTo.toString());
         return new GrafanaBundle(metrics, comparisons);
+    }
+
+    private HostMetrics fetchHostMetrics(
+            GrafanaQueryContext context, String host,
+            Instant incidentFrom, Instant incidentTo, Instant baselineFrom, Instant baselineTo,
+            String grafanaCookie, GrafanaClient.InfluxScope scope) {
+        CompletableFuture<Map<String, List<Double>>> incidentFuture = CompletableFuture.supplyAsync(
+                () -> grafanaClient.fetchTimeSeries(context, incidentFrom, incidentTo, grafanaCookie, scope),
+                GRAFANA_FETCH_EXECUTOR);
+        CompletableFuture<Map<String, List<Double>>> baselineFuture = CompletableFuture.supplyAsync(
+                () -> grafanaClient.fetchTimeSeries(context, baselineFrom, baselineTo, grafanaCookie, scope),
+                GRAFANA_FETCH_EXECUTOR);
+        return new HostMetrics(host, incidentFuture.join(), baselineFuture.join());
+    }
+
+    private record HostMetrics(String host, Map<String, List<Double>> incident, Map<String, List<Double>> baseline) {
+    }
+
+    private record PodGrafanaResult(PodAggregate pod, GrafanaBundle grafana) {
     }
 
     private static void mergeTimeSeries(Map<String, List<Double>> target, Map<String, List<Double>> source) {
@@ -479,18 +545,63 @@ public class ObservabilityService {
         return fetchKibanaLogs(requestId, from, to, null);
     }
 
+    private List<Phase1Request> buildPhase1Requests(
+            List<SlowHarEntry> slowEntries, String correlationId,
+            Map<String, Double> weights, Instant defaultFrom, Instant defaultTo, Instant defaultEvent) {
+        List<Phase1Request> requests = new ArrayList<>();
+        Set<String> seenRequestIds = new HashSet<>();
+        for (SlowHarEntry entry : slowEntries) {
+            String requestId = effectiveRequestId(entry, correlationId);
+            double weight = entry.getAnalysisWeight() > 0
+                    ? entry.getAnalysisWeight()
+                    : weights.getOrDefault(HarWaitAnalysisWeights.apiKey(entry), 0.0);
+            if (requestId.isBlank()) {
+                log.debug("Skipping observability fetch for slow API {} — no requestId", slowApiLabel(entry));
+                continue;
+            }
+            if (!seenRequestIds.add(requestId)) {
+                continue;
+            }
+            requests.add(new Phase1Request(
+                    entry,
+                    requestId,
+                    weight,
+                    parseInstant(entry.getQueryWindowFrom(), defaultFrom),
+                    parseInstant(entry.getQueryWindowTo(), defaultTo),
+                    parseInstant(entry.getEventTimestamp(), defaultEvent),
+                    HarStitchContext.from(entry)));
+        }
+        return requests;
+    }
+
+    private Phase1Result fetchPhase1Observability(
+            Phase1Request req, ErrorContext harError, SessionCookies sessionCookies,
+            AtomicBoolean graylogExhausted) {
+        List<Map<String, Object>> kibanaLogs = fetchKibanaLogs(
+                req.requestId(), req.from(), req.to(), harError);
+        List<Map<String, Object>> graylogLogs = fetchGraylogLogs(
+                req.requestId(), req.from(), req.to(), req.har(), kibanaLogs, sessionCookies, graylogExhausted);
+        return new Phase1Result(
+                req.entry(), req.requestId(), req.weight(), req.from(), req.to(), req.eventTime(),
+                kibanaLogs, graylogLogs);
+    }
+
     private List<Map<String, Object>> fetchGraylogLogs(
             String requestId, Instant from, Instant to,
             HarStitchContext har, List<Map<String, Object>> kibanaLogs,
-            SessionCookies sessionCookies) {
+            SessionCookies sessionCookies, AtomicBoolean graylogExhausted) {
+
+        if (graylogExhausted.get()) {
+            return List.of();
+        }
 
         if (useGraylogStub(sessionCookies)) {
             log.debug("Graylog provider: synthetic for requestId={}", requestId);
             return SyntheticGraylogProvider.build(requestId, har, kibanaLogs);
         }
 
-        GraylogClient.GraylogFetchResult result =
-                graylogClient.fetchLogsResult(requestId, from, to, sessionCookies.graylog());
+        GraylogClient.GraylogFetchResult result = graylogClient.fetchLogsResult(
+                requestId, from, to, sessionCookies.graylog(), har.url());
         if (!result.authenticated()) {
             if (properties.isUseSynthetic()) {
                 log.warn("Graylog auth failed for requestId={} — using synthetic graylog", requestId);
@@ -500,11 +611,75 @@ public class ObservabilityService {
             return List.of();
         }
         if (result.logs().isEmpty()) {
-            log.warn("Graylog auth OK but no logs for requestId={} (total_results={}) — not using synthetic",
-                    requestId, result.totalResults());
+            if (result.totalResults() == 0) {
+                graylogExhausted.set(true);
+                log.warn("Graylog auth OK but no logs for requestId={} (total_results=0) window={}..{} — "
+                                + "skipping remaining Graylog searches (logs likely aged out of retention)",
+                        requestId, from, to);
+            } else {
+                log.warn("Graylog auth OK but no logs for requestId={} (total_results={}) window={}..{}",
+                        requestId, result.totalResults(), from, to);
+            }
             return List.of();
         }
         return result.logs();
+    }
+
+    private List<Map<String, Object>> fetchGraylogLogs(
+            String requestId, Instant from, Instant to,
+            HarStitchContext har, List<Map<String, Object>> kibanaLogs,
+            SessionCookies sessionCookies) {
+        return fetchGraylogLogs(requestId, from, to, har, kibanaLogs, sessionCookies, new AtomicBoolean(false));
+    }
+
+    /**
+     * When per-requestId searches return nothing, pull ingress/access logs for slow API paths
+     * across the full incident window (how yesterday's 99 ingress hits were found).
+     */
+    private void fetchSessionGraylogFallback(
+            KafkaHarMessage message, List<SlowHarEntry> slowEntries,
+            Instant from, Instant to, SessionCookies sessionCookies,
+            List<Map<String, Object>> allGraylog, AtomicBoolean graylogExhausted) {
+        if (useGraylogStub(sessionCookies) || !allGraylog.isEmpty() || graylogExhausted.get()) {
+            return;
+        }
+        List<String> urls = slowEntries.stream()
+                .map(SlowHarEntry::getUrl)
+                .filter(url -> url != null && !url.isBlank())
+                .distinct()
+                .limit(8)
+                .toList();
+        String query = GraylogClient.buildSessionPathQuery(urls);
+        if (query.isBlank()) {
+            return;
+        }
+        GraylogClient.GraylogFetchResult result =
+                graylogClient.fetchQueryResult(query, from, to, sessionCookies.graylog(), "slow-api-paths");
+        if (!result.authenticated() || result.logs().isEmpty()) {
+            return;
+        }
+        mergeGraylogLogs(allGraylog, result.logs());
+        log.info("Graylog session fallback added {} logs for job correlationId={}",
+                result.logs().size(), message.getCorrelationId());
+    }
+
+    private static void mergeGraylogLogs(List<Map<String, Object>> target, List<Map<String, Object>> source) {
+        Set<String> seen = new HashSet<>();
+        for (Map<String, Object> existing : target) {
+            seen.add(graylogDedupeKey(existing));
+        }
+        for (Map<String, Object> log : source) {
+            String key = graylogDedupeKey(log);
+            if (seen.add(key)) {
+                target.add(log);
+            }
+        }
+    }
+
+    private static String graylogDedupeKey(Map<String, Object> log) {
+        return String.valueOf(log.getOrDefault("timestamp", ""))
+                + "|" + log.getOrDefault("message", "")
+                + "|" + log.getOrDefault("path", log.getOrDefault("httpUri", ""));
     }
 
     private String resolvePodName(List<Map<String, Object>> graylogLogs, List<Map<String, Object>> kibanaLogs) {
@@ -547,7 +722,54 @@ public class ObservabilityService {
         return lines;
     }
 
+    private record Phase1Request(
+            SlowHarEntry entry, String requestId, double weight,
+            Instant from, Instant to, Instant eventTime, HarStitchContext har) {
+    }
+
+    private record Phase1Result(
+            SlowHarEntry entry, String requestId, double weight,
+            Instant from, Instant to, Instant eventTime,
+            List<Map<String, Object>> kibanaLogs, List<Map<String, Object>> graylogLogs) {
+    }
+
     private record GrafanaBundle(Map<String, Object> podMetrics, List<MetricComparison> comparisons) {
+    }
+
+    /**
+     * Accumulates every slow API (requestId) that resolved to the same pod so Grafana is
+     * queried once per pod. Weights are summed (x + y + z) and the query window is widened
+     * to the union of all contributing requests.
+     */
+    private static final class PodAggregate {
+        private final String podName;
+        private double cumulativeWeight;
+        private Instant from;
+        private Instant to;
+        private Instant eventTime;
+        private final List<String> requestIds = new ArrayList<>();
+        private final List<Map<String, Object>> kibanaLogs = new ArrayList<>();
+        private final List<Map<String, Object>> graylogLogs = new ArrayList<>();
+
+        private PodAggregate(String podName) {
+            this.podName = podName;
+        }
+
+        private void add(String requestId, double weight, Instant from, Instant to, Instant eventTime,
+                         List<Map<String, Object>> kibana, List<Map<String, Object>> graylog) {
+            this.cumulativeWeight += weight;
+            this.requestIds.add(requestId);
+            this.from = (this.from == null || from.isBefore(this.from)) ? from : this.from;
+            this.to = (this.to == null || to.isAfter(this.to)) ? to : this.to;
+            this.eventTime = (this.eventTime == null || eventTime.isBefore(this.eventTime))
+                    ? eventTime : this.eventTime;
+            kibana.forEach(log -> mergeKibanaLog(this.kibanaLogs, log));
+            this.graylogLogs.addAll(graylog);
+        }
+
+        private String joinedRequestIds() {
+            return String.join(",", requestIds);
+        }
     }
 
     private record SessionCookies(String graylog, String grafana) {
